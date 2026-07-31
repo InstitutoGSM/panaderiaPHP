@@ -121,8 +121,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     exit;
   }
 
+    /* ── Acciones solo para Admin de Panadería ────────────────────────── */
+  $acciones_admin = ['set_identificador','crear_trabajador','eliminar_trabajador','solicitar_admin','crear_sucursal','eliminar_sucursal'];
+  if (in_array($accion, $acciones_admin) && !$u['is_admin_pan']) {
+    $msg_err = 'Solo el Admin de la Panadería puede realizar esta acción.';
+    $seccion = 'inicio';
+    // no hacemos nada más, el flujo normal sigue y muestra el error
+  /* ── Solo Admin de Panadería puede gestionar trabajadores/sucursales */
+  if (!$u['is_admin_pan'] && in_array($accion, ['set_identificador','crear_trabajador','eliminar_trabajador','solicitar_admin','crear_sucursal','eliminar_sucursal'])) {
+    $msg_err = 'Solo el Admin de la Panadería puede realizar esta acción.';
+    $seccion = 'inicio';
+  }
+
   /* ── Set identificador ────────────────────────────────────────────── */
-  if ($accion === 'set_identificador') {
+  if ($accion === 'set_identificador' && $u['is_admin_pan']) {
     $ident = preg_replace('/[^a-zA-Z0-9_]/', '', trim($_POST['identificador'] ?? ''));
     if (!$ident) {
       $msg_err = 'Identificador inválido.';
@@ -390,8 +402,10 @@ try {
             <?php endif; ?>
           </a>
         </li>
+        <?php if ($u['is_admin_pan']): ?>
         <li><a href="vendedor.php?sec=trabajadores" class="<?= $seccion === 'trabajadores' ? 'on' : '' ?>"><span class="nav-ico">👥</span> Trabajadores</a></li>
         <li><a href="vendedor.php?sec=sucursales" class="<?= $seccion === 'sucursales'   ? 'on' : '' ?>"><span class="nav-ico">🏬</span> Sucursales</a></li>
+        <?php endif; ?>
         <li><a href="vendedor.php?sec=perfil" class="<?= $seccion === 'perfil' ? 'on' : '' ?>"><span class="nav-ico">⚙️</span> Mi Perfil</a></li>
         <li>
           <a href="vendedor.php?sec=documentos" class="<?= $seccion === 'documentos' ? 'on' : '' ?>">
@@ -1529,6 +1543,7 @@ try {
       box.appendChild(t);
       setTimeout(() => t.remove(), 3200);
     }
+
     <?php if ($msg_ok): ?>toast('<?= addslashes($msg_ok) ?>', 'ok');
     <?php endif; ?>
   </script>

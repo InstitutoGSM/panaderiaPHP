@@ -81,7 +81,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['ok' => false, 'msg' => 'Mínimo 6 caracteres']);
         exit;
       }
-      db()->prepare("UPDATE usuarios SET password=? WHERE id=? AND tipo='vendedor'")
+      db()->prepare("UPDATE usuarios SET password_hash=? WHERE id=? AND tipo='vendedor'")
         ->execute([password_hash($pass, PASSWORD_DEFAULT), $uid]);
       echo json_encode(['ok' => true, 'msg' => 'Contraseña actualizada ✅']);
       break;
@@ -124,8 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['ok' => false, 'msg' => 'Mínimo 6 caracteres']);
         exit;
       }
-      db()->prepare("UPDATE usuarios SET password=? WHERE id=?")->execute([password_hash($pass, PASSWORD_DEFAULT), $uid]);
-      echo json_encode(['ok' => true, 'msg' => 'Contraseña reseteada ✅']);
+      db()->prepare("UPDATE usuarios SET password_hash=? WHERE id=?")->execute([password_hash($pass, PASSWORD_DEFAULT), $uid]);
       break;
 
     case 'aprobar_admin_pan':
