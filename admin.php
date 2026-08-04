@@ -127,6 +127,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       db()->prepare("UPDATE usuarios SET password_hash=? WHERE id=?")->execute([password_hash($pass, PASSWORD_DEFAULT), $uid]);
       break;
 
+    // ── Catálogo Base ─────────────────────────────────────
+    case 'add_catalogo':
+      $nom  = trim($_POST['nombre']      ?? '');
+      $desc = trim($_POST['descripcion'] ?? '');
+      $cat  = $_POST['categoria']        ?? 'pan';
+      if (!$nom) {
+        echo json_encode(['ok' => false, 'msg' => 'El nombre es obligatorio']);
+        exit;
+      }
+      $img_url = null;
+      if (!empty($_FILES['imagen']['name'])) {
+        $img_url = subir_imagen($_FILES['imagen'], 'cat');
+        if (!$img_url) {
+          echo json_encode(['ok' => false, 'msg' => 'Error al subir imagen (máx 5MB, jpg/png/webp)']);
+          exit;
+        }
+      }
+      db()->prepare("INSERT INTO catalogo_base (nombre, descripcion, categoria, imagen_url) VALUES (?,?,?,?)")
+        ->execute([$nom, $desc ?: null, $cat, $img_url]);
+      echo json_encode(['ok' => true, 'msg' => 'Producto agregado al catálogo ✅']);
+      break;
+
+    case 'edit_catalogo':
+      $cid  = (int)($_POST['cid']         ?? 0);
+      $nom  = trim($_POST['nombre']       ?? '');
+      $desc = trim($_POST['descripcion']  ?? '');
+      $cat  = $_POST['categoria']         ?? 'pan';
+      if (!$cid || !$nom) {
+        echo json_encode(['ok' => false, 'msg' => 'Datos inválidos']);
+        exit;
+      }
+      $img_url = null;
+      if (!empty($_FILES['imagen']['name'])) {
+        $img_url = subir_imagen($_FILES['imagen'], 'cat');
+      }
+      if ($img_url) {
+        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=?,imagen_url=? WHERE id=?")
+          ->execute([$nom, $desc ?: null, $cat, $img_url, $cid]);
+      } else {
+        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=? WHERE id=?")
+          ->execute([$nom, $desc ?: null, $cat, $cid]);
+      }
+      echo json_encode(['ok' => true, 'msg' => 'Producto actualizado ✅']);
+      break;
+
+    case 'toggle_catalogo':
+      $cid = (int)($_POST['cid'] ?? 0);
+      if (!$cid) {
+        echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
+        exit;
+      }
+      db()->prepare("UPDATE catalogo_base SET activo = NOT activo WHERE id=?")->execute([$cid]);
+      echo json_encode(['ok' => true, 'msg' => 'Estado actualizado']);
+      break;
+
+    case 'delete_catalogo':
+      $cid = (int)($_POST['cid'] ?? 0);
+      if (!$cid) {
+        echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
+        exit;
+      }
+      db()->prepare("DELETE FROM catalogo_base WHERE id=?")->execute([$cid]);
+      echo json_encode(['ok' => true, 'msg' => 'Producto eliminado del catálogo']);
+      break;
+
     case 'aprobar_admin_pan':
       $sol_id = (int)($_POST['sol_id'] ?? 0);
       $stmt = db()->prepare("SELECT * FROM solicitudes_admin WHERE id=?");
@@ -162,6 +227,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // ── Cargar datos ──────────────────────────────────────────────────────────
+
+$catalogo = db()->query("SELECT * FROM catalogo_base ORDER BY categoria, nombre")->fetchAll();
 
 // Vendedores (panaderias)
 $vendedores = db()->query("
@@ -531,6 +598,7 @@ foreach ($vendedores as $v) {
           </span>
         <?php endif; ?>
       </button>
+      <button class="tab-btn" data-tab="tab-catalogo">📦 Catálogo Base</button>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
@@ -1216,6 +1284,85 @@ foreach ($vendedores as $v) {
           if (d.ok) setTimeout(() => location.reload(), 1200);
         });
     }
+
+    // ══ CATÁLOGO BASE ════════════════════════════════════════════
+    function abrirFormCat() {
+      document.getElementById('form-cat-titulo').textContent = 'Nuevo producto';
+      document.getElementById('form-cat').reset();
+      document.querySelector('#form-cat [name="accion"]').value = 'add_catalogo';
+      document.querySelector('#form-cat [name="cid"]').value = '';
+      document.getElementById('form-cat-wrap').style.display = 'block';
+      document.getElementById('form-cat-wrap').scrollIntoView({
+        behavior: 'smooth'
+      });
+    }
+
+    function cerrarFormCat() {
+      document.getElementById('form-cat-wrap').style.display = 'none';
+    }
+
+    function editarCat(id, nombre, descripcion, categoria) {
+      document.getElementById('form-cat-titulo').textContent = 'Editar producto';
+      const f = document.getElementById('form-cat');
+      f.querySelector('[name="accion"]').value = 'edit_catalogo';
+      f.querySelector('[name="cid"]').value = id;
+      f.querySelector('[name="nombre"]').value = nombre;
+      f.querySelector('[name="descripcion"]').value = descripcion;
+      f.querySelector('[name="categoria"]').value = categoria;
+      document.getElementById('form-cat-wrap').style.display = 'block';
+      document.getElementById('form-cat-wrap').scrollIntoView({
+        behavior: 'smooth'
+      });
+    }
+
+    function toggleCat(id, activo) {
+      const msg = activo ? '¿Desactivar este producto del catálogo?' : '¿Activar este producto?';
+      if (!confirm(msg)) return;
+      fetch('admin.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `accion=toggle_catalogo&cid=${id}`
+      }).then(r => r.json()).then(d => {
+        toast(d.msg, d.ok ? 'ok' : 'err');
+        if (d.ok) setTimeout(() => location.reload(), 900);
+      });
+    }
+
+    function eliminarCat(id, nombre) {
+      if (!confirm(`¿Eliminar "${nombre}" del catálogo? Esta acción no se puede deshacer.`)) return;
+      fetch('admin.php', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `accion=delete_catalogo&cid=${id}`
+      }).then(r => r.json()).then(d => {
+        toast(d.msg, d.ok ? 'ok' : 'err');
+        if (d.ok) setTimeout(() => location.reload(), 900);
+      });
+    }
+
+    document.getElementById('form-cat')?.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btn-cat-submit');
+      btn.disabled = true;
+      btn.textContent = 'Guardando...';
+      const fd = new FormData(this);
+      const res = await fetch('admin.php', {
+        method: 'POST',
+        body: fd
+      });
+      const data = await res.json();
+      toast(data.msg, data.ok ? 'ok' : 'err');
+      if (data.ok) setTimeout(() => location.reload(), 900);
+      else {
+        btn.disabled = false;
+        btn.textContent = 'Guardar';
+      }
+    });
+    
   </script>
 </body>
 

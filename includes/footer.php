@@ -7,7 +7,7 @@
     <div class="footer-col footer-logo-col">
       <div class="footer-logo-wrap">
         <img src="<?= SITE_URL ?>/assets/logo.png" alt="Logo"
-             class="footer-logo-img" onerror="this.style.display='none'">
+          class="footer-logo-img" onerror="this.style.display='none'">
       </div>
       <div class="footer-marca">
         Panaderia<br><span>PUMA</span>
@@ -31,11 +31,14 @@
     <div class="footer-col">
       <h4>Ayuda</h4>
       <a href="<?= SITE_URL ?>/nosotros.php">¿Cómo comprar?</a>
-      <a href="<?= SITE_URL ?>/login.php">¿Cómo vender?</a>
       <a href="<?= SITE_URL ?>/nosotros.php">Preguntas frecuentes</a>
+      <a href="<?= SITE_URL ?>/login.php?tab=registro" style="font-weight:600;color:var(--naranja)">
+        📦 Registrá tu sucursal
+      </a>
     </div>
 
   </div>
 </footer>
 </body>
+
 </html>

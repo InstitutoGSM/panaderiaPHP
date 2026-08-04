@@ -594,3 +594,67 @@ body {
     justify-content: center;
   }
 }
+
+/* ── Hero producto cards ─────────────────────────────── */
+.hero-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  width: 100%;
+  max-width: 420px;
+}
+
+.hero-prod-card {
+  background: linear-gradient(135deg, var(--c1), var(--c2));
+  border-radius: 16px;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+  transition: transform .2s, box-shadow .2s;
+  cursor: default;
+}
+
+.hero-prod-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.25);
+}
+
+.hpc-img {
+  font-size: 2.4rem;
+  line-height: 1;
+}
+
+.hpc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hpc-titulo {
+  font-family: 'Playfair Display', serif;
+  font-weight: 700;
+  font-size: 1rem;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.hpc-sub {
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.82);
+  line-height: 1.3;
+}
+
+.hpc-tag {
+  margin-top: 6px;
+  display: inline-block;
+  background: rgba(255,255,255,0.22);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 20px;
+  backdrop-filter: blur(4px);
+  width: fit-content;
+}
