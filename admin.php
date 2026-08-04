@@ -129,11 +129,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ── Catálogo Base ─────────────────────────────────────
     case 'add_catalogo':
-      $nom  = trim($_POST['nombre']      ?? '');
-      $desc = trim($_POST['descripcion'] ?? '');
-      $cat  = $_POST['categoria']        ?? 'pan';
+      $nom        = trim($_POST['nombre']        ?? '');
+      $desc       = trim($_POST['descripcion']   ?? '');
+      $cat        = $_POST['categoria']          ?? 'pan';
+      $unidad     = $_POST['unidad_venta']       ?? 'unidad';
+      $precio_min = (float)($_POST['precio_minimo'] ?? 0);
       if (!$nom) {
         echo json_encode(['ok' => false, 'msg' => 'El nombre es obligatorio']);
+        exit;
+      }
+      if ($precio_min < 0) {
+        echo json_encode(['ok' => false, 'msg' => 'El precio mínimo no puede ser negativo']);
         exit;
       }
       $img_url = null;
@@ -144,16 +150,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           exit;
         }
       }
-      db()->prepare("INSERT INTO catalogo_base (nombre, descripcion, categoria, imagen_url) VALUES (?,?,?,?)")
-        ->execute([$nom, $desc ?: null, $cat, $img_url]);
+      db()->prepare("INSERT INTO catalogo_base (nombre, descripcion, categoria, unidad_venta, precio_minimo, imagen_url) VALUES (?,?,?,?,?,?)")
+        ->execute([$nom, $desc ?: null, $cat, $unidad, $precio_min, $img_url]);
       echo json_encode(['ok' => true, 'msg' => 'Producto agregado al catálogo ✅']);
       break;
 
     case 'edit_catalogo':
-      $cid  = (int)($_POST['cid']         ?? 0);
-      $nom  = trim($_POST['nombre']       ?? '');
-      $desc = trim($_POST['descripcion']  ?? '');
-      $cat  = $_POST['categoria']         ?? 'pan';
+      $cid        = (int)($_POST['cid']         ?? 0);
+      $nom        = trim($_POST['nombre']       ?? '');
+      $desc       = trim($_POST['descripcion']  ?? '');
+      $cat        = $_POST['categoria']         ?? 'pan';
+      $unidad     = $_POST['unidad_venta']      ?? 'unidad';
+      $precio_min = (float)($_POST['precio_minimo'] ?? 0);
       if (!$cid || !$nom) {
         echo json_encode(['ok' => false, 'msg' => 'Datos inválidos']);
         exit;
@@ -163,11 +171,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $img_url = subir_imagen($_FILES['imagen'], 'cat');
       }
       if ($img_url) {
-        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=?,imagen_url=? WHERE id=?")
-          ->execute([$nom, $desc ?: null, $cat, $img_url, $cid]);
+        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=?,unidad_venta=?,precio_minimo=?,imagen_url=? WHERE id=?")
+          ->execute([$nom, $desc ?: null, $cat, $unidad, $precio_min, $img_url, $cid]);
       } else {
-        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=? WHERE id=?")
-          ->execute([$nom, $desc ?: null, $cat, $cid]);
+        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=?,unidad_venta=?,precio_minimo=? WHERE id=?")
+          ->execute([$nom, $desc ?: null, $cat, $unidad, $precio_min, $cid]);
       }
       echo json_encode(['ok' => true, 'msg' => 'Producto actualizado ✅']);
       break;
@@ -192,32 +200,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       echo json_encode(['ok' => true, 'msg' => 'Producto eliminado del catálogo']);
       break;
 
-    case 'aprobar_admin_pan':
-      $sol_id = (int)($_POST['sol_id'] ?? 0);
-      $stmt = db()->prepare("SELECT * FROM solicitudes_admin WHERE id=?");
-      $stmt->execute([$sol_id]);
-      $sol = $stmt->fetch();
-      if ($sol) {
-        db()->prepare("UPDATE solicitudes_admin SET estado='aprobado' WHERE id=?")->execute([$sol_id]);
-        db()->prepare("UPDATE usuarios SET is_admin_pan=1 WHERE id=?")->execute([$sol['trabajador_id']]);
-        echo json_encode(['ok' => true, 'msg' => '✅ Admin de panadería aprobado']);
-      } else {
-        echo json_encode(['ok' => false, 'msg' => 'Solicitud no encontrada']);
+    case 'set_tipo_sucursal':
+      // Admin Global designa a un vendedor como Sucursal Padre o Hija
+      if (!$uid) {
+        echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
+        exit;
       }
-      break;
-
-    case 'rechazar_admin_pan':
-      $sol_id = (int)($_POST['sol_id'] ?? 0);
-      $stmt2 = db()->prepare("SELECT * FROM solicitudes_admin WHERE id=?");
-      $stmt2->execute([$sol_id]);
-      $sol2 = $stmt2->fetch();
-      if ($sol2) {
-        db()->prepare("UPDATE solicitudes_admin SET estado='rechazado' WHERE id=?")->execute([$sol_id]);
-        db()->prepare("UPDATE usuarios SET is_admin_pan=0 WHERE id=?")->execute([$sol2['trabajador_id']]);
-        echo json_encode(['ok' => true, 'msg' => '❌ Solicitud rechazada']);
-      } else {
-        echo json_encode(['ok' => false, 'msg' => 'Solicitud no encontrada']);
+      $tipo_suc = $_POST['tipo_sucursal'] ?? '';
+      $padre_id = (int)($_POST['padre_id'] ?? 0);
+      if (!in_array($tipo_suc, ['padre', 'hija', ''])) {
+        echo json_encode(['ok' => false, 'msg' => 'Tipo inválido']);
+        exit;
       }
+      if ($tipo_suc === 'hija' && !$padre_id) {
+        echo json_encode(['ok' => false, 'msg' => 'Debés seleccionar una sucursal padre']);
+        exit;
+      }
+      if ($tipo_suc === 'hija' && $padre_id === $uid) {
+        echo json_encode(['ok' => false, 'msg' => 'Una sucursal no puede ser hija de sí misma']);
+        exit;
+      }
+      $padre_real = ($tipo_suc === 'hija') ? $padre_id : null;
+      db()->prepare("UPDATE usuarios SET tipo_sucursal=?, sucursal_padre_id=? WHERE id=? AND tipo='vendedor'")
+        ->execute([$tipo_suc ?: null, $padre_real, $uid]);
+      echo json_encode(['ok' => true, 'msg' => 'Tipo de sucursal actualizado ✅']);
       break;
 
     default:
@@ -234,7 +240,8 @@ $catalogo = db()->query("SELECT * FROM catalogo_base ORDER BY categoria, nombre"
 $vendedores = db()->query("
     SELECT id, nombre, nombre_panaderia, email, email_contacto,
            avatar_url, estado_verificacion, puede_ser_admin, doc_notas_rechazo,
-           doc_bromatologia, doc_carnet_manipulador, doc_habilitacion_comercial, created_at
+           doc_bromatologia, doc_carnet_manipulador, doc_habilitacion_comercial,
+           tipo_sucursal, sucursal_padre_id, created_at
     FROM usuarios WHERE tipo='vendedor'
     ORDER BY FIELD(estado_verificacion,'pendiente','sin_enviar','rechazado','aprobado'), created_at DESC
 ")->fetchAll();
@@ -590,14 +597,6 @@ foreach ($vendedores as $v) {
           </span>
         <?php endif; ?>
       </button>
-      <button class="admin-tab" onclick="cambiarTab('tab-solicitudes-admin', this)">
-        👑 Solicitudes Admin
-        <?php if ($pendientes_count > 0): ?>
-          <span style="background:#C8601A;color:white;border-radius:50px;padding:1px 8px;font-size:0.72rem;margin-left:4px">
-            <?= $pendientes_count ?>
-          </span>
-        <?php endif; ?>
-      </button>
       <button class="tab-btn" data-tab="tab-catalogo">📦 Catálogo Base</button>
     </div>
 
@@ -676,8 +675,63 @@ foreach ($vendedores as $v) {
                     onchange="toggleAdmin(<?= $v['id'] ?>, this.checked)">
                   <span class="toggle-slider"></span>
                 </label>
-                <span style="font-weight:700;font-size:0.88rem">Habilitar como Admin de Panadería</span>
-                <span style="font-size:0.78rem;color:var(--gris)">(puede gestionar su propia tienda)</span>
+                <span style="font-weight:700;font-size:0.88rem">Habilitar como Encargado</span>
+                <span style="font-size:0.78rem;color:var(--gris)">(puede gestionar su propia sucursal)</span>
+              </div>
+
+              <!-- Tipo sucursal: Padre / Hija -->
+              <?php
+              $tipo_actual = $v['tipo_sucursal'] ?? '';
+              $padre_nombre = '';
+              if ($tipo_actual === 'hija' && $v['sucursal_padre_id']) {
+                foreach ($vendedores as $vp) {
+                  if ($vp['id'] === (int)$v['sucursal_padre_id']) {
+                    $padre_nombre = $vp['nombre_panaderia'] ?: $vp['nombre'];
+                    break;
+                  }
+                }
+              }
+              ?>
+              <div style="margin-top:16px;padding:14px;background:var(--crema);border-radius:var(--radio);border:1px solid var(--crema-dark)">
+                <p style="font-weight:700;font-size:0.85rem;margin:0 0 10px">🏢 Rol en jerarquía de sucursales</p>
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                  <select id="tipo-suc-<?= $v['id'] ?>"
+                    style="padding:6px 12px;border-radius:var(--radio);border:1px solid #ccc;font-size:0.85rem">
+                    <option value="" <?= !$tipo_actual ? 'selected' : '' ?>>— Sin clasificar —</option>
+                    <option value="padre" <?= $tipo_actual === 'padre' ? 'selected' : '' ?>>Sucursal Padre</option>
+                    <option value="hija" <?= $tipo_actual === 'hija'  ? 'selected' : '' ?>>Sucursal Hija</option>
+                  </select>
+
+                  <select id="padre-suc-<?= $v['id'] ?>"
+                    style="padding:6px 12px;border-radius:var(--radio);border:1px solid #ccc;font-size:0.85rem;
+                           display:<?= $tipo_actual === 'hija' ? 'block' : 'none' ?>">
+                    <option value="">— Seleccionar Padre —</option>
+                    <?php foreach ($vendedores as $vp): ?>
+                      <?php if ($vp['id'] !== $v['id'] && ($vp['tipo_sucursal'] === 'padre' || !$vp['tipo_sucursal'])): ?>
+                        <option value="<?= $vp['id'] ?>"
+                          <?= (int)$v['sucursal_padre_id'] === $vp['id'] ? 'selected' : '' ?>>
+                          <?= h($vp['nombre_panaderia'] ?: $vp['nombre']) ?>
+                        </option>
+                      <?php endif; ?>
+                    <?php endforeach; ?>
+                  </select>
+
+                  <button onclick="guardarTipoSucursal(<?= $v['id'] ?>)"
+                    style="padding:6px 16px;background:var(--naranja);color:white;border:none;
+                           border-radius:50px;font-weight:700;font-size:0.83rem;cursor:pointer">
+                    Guardar
+                  </button>
+
+                  <?php if ($tipo_actual): ?>
+                    <span style="font-size:0.8rem;font-weight:700;
+                      color:<?= $tipo_actual === 'padre' ? '#1565C0' : '#6A1B9A' ?>;
+                      background:<?= $tipo_actual === 'padre' ? '#E3F2FD' : '#F3E5F5' ?>;
+                      padding:3px 10px;border-radius:50px">
+                      <?= $tipo_actual === 'padre' ? '🔵 Padre' : '🟣 Hija' ?>
+                      <?= $padre_nombre ? ' de ' . h($padre_nombre) : '' ?>
+                    </span>
+                  <?php endif; ?>
+                </div>
               </div>
 
               <!-- Acciones -->
@@ -1362,6 +1416,36 @@ foreach ($vendedores as $v) {
         btn.textContent = 'Guardar';
       }
     });
+
+    // ── Tipo Sucursal ────────────────────────────────────────────────────
+    document.querySelectorAll('[id^="tipo-suc-"]').forEach(sel => {
+      sel.addEventListener('change', function() {
+        const uid = this.id.replace('tipo-suc-', '');
+        const padreSel = document.getElementById('padre-suc-' + uid);
+        padreSel.style.display = this.value === 'hija' ? 'block' : 'none';
+      });
+    });
+
+    function guardarTipoSucursal(uid) {
+      const tipo = document.getElementById('tipo-suc-' + uid).value;
+      const padre = document.getElementById('padre-suc-' + uid).value;
+      const body = new URLSearchParams({
+        accion: 'set_tipo_sucursal',
+        uid,
+        tipo_sucursal: tipo,
+        padre_id: padre
+      });
+      fetch('admin.php', {
+          method: 'POST',
+          body
+        })
+        .then(r => r.json())
+        .then(d => {
+          toast(d.msg, d.ok ? 'ok' : 'err');
+          if (d.ok) setTimeout(() => location.reload(), 900);
+        });
+    }
+
     
   </script>
 </body>
