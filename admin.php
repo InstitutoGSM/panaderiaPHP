@@ -127,80 +127,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       db()->prepare("UPDATE usuarios SET password_hash=? WHERE id=?")->execute([password_hash($pass, PASSWORD_DEFAULT), $uid]);
       break;
 
-    // ── Catálogo Base ─────────────────────────────────────
-    case 'add_catalogo':
-      $nom        = trim($_POST['nombre']        ?? '');
-      $desc       = trim($_POST['descripcion']   ?? '');
-      $cat        = $_POST['categoria']          ?? 'pan';
-      $unidad     = $_POST['unidad_venta']       ?? 'unidad';
-      $precio_min = (float)($_POST['precio_minimo'] ?? 0);
-      if (!$nom) {
-        echo json_encode(['ok' => false, 'msg' => 'El nombre es obligatorio']);
-        exit;
-      }
-      if ($precio_min < 0) {
-        echo json_encode(['ok' => false, 'msg' => 'El precio mínimo no puede ser negativo']);
-        exit;
-      }
-      $img_url = null;
-      if (!empty($_FILES['imagen']['name'])) {
-        $img_url = subir_imagen($_FILES['imagen'], 'cat');
-        if (!$img_url) {
-          echo json_encode(['ok' => false, 'msg' => 'Error al subir imagen (máx 5MB, jpg/png/webp)']);
-          exit;
-        }
-      }
-      db()->prepare("INSERT INTO catalogo_base (nombre, descripcion, categoria, unidad_venta, precio_minimo, imagen_url) VALUES (?,?,?,?,?,?)")
-        ->execute([$nom, $desc ?: null, $cat, $unidad, $precio_min, $img_url]);
-      echo json_encode(['ok' => true, 'msg' => 'Producto agregado al catálogo ✅']);
-      break;
-
-    case 'edit_catalogo':
-      $cid        = (int)($_POST['cid']         ?? 0);
-      $nom        = trim($_POST['nombre']       ?? '');
-      $desc       = trim($_POST['descripcion']  ?? '');
-      $cat        = $_POST['categoria']         ?? 'pan';
-      $unidad     = $_POST['unidad_venta']      ?? 'unidad';
-      $precio_min = (float)($_POST['precio_minimo'] ?? 0);
-      if (!$cid || !$nom) {
-        echo json_encode(['ok' => false, 'msg' => 'Datos inválidos']);
-        exit;
-      }
-      $img_url = null;
-      if (!empty($_FILES['imagen']['name'])) {
-        $img_url = subir_imagen($_FILES['imagen'], 'cat');
-      }
-      if ($img_url) {
-        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=?,unidad_venta=?,precio_minimo=?,imagen_url=? WHERE id=?")
-          ->execute([$nom, $desc ?: null, $cat, $unidad, $precio_min, $img_url, $cid]);
-      } else {
-        db()->prepare("UPDATE catalogo_base SET nombre=?,descripcion=?,categoria=?,unidad_venta=?,precio_minimo=? WHERE id=?")
-          ->execute([$nom, $desc ?: null, $cat, $unidad, $precio_min, $cid]);
-      }
-      echo json_encode(['ok' => true, 'msg' => 'Producto actualizado ✅']);
-      break;
-
-    case 'toggle_catalogo':
-      $cid = (int)($_POST['cid'] ?? 0);
-      if (!$cid) {
-        echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
-        exit;
-      }
-      db()->prepare("UPDATE catalogo_base SET activo = NOT activo WHERE id=?")->execute([$cid]);
-      echo json_encode(['ok' => true, 'msg' => 'Estado actualizado']);
-      break;
-
-    case 'delete_catalogo':
-      $cid = (int)($_POST['cid'] ?? 0);
-      if (!$cid) {
-        echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
-        exit;
-      }
-      db()->prepare("DELETE FROM catalogo_base WHERE id=?")->execute([$cid]);
-      echo json_encode(['ok' => true, 'msg' => 'Producto eliminado del catálogo']);
-      break;
-
     case 'set_tipo_sucursal':
+      
       // Admin Global designa a un vendedor como Sucursal Padre o Hija
       if (!$uid) {
         echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
@@ -234,8 +162,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // ── Cargar datos ──────────────────────────────────────────────────────────
 
-$catalogo = db()->query("SELECT * FROM catalogo_base ORDER BY categoria, nombre")->fetchAll();
-
 // Vendedores (panaderias)
 $vendedores = db()->query("
     SELECT id, nombre, nombre_panaderia, email, email_contacto,
@@ -245,19 +171,6 @@ $vendedores = db()->query("
     FROM usuarios WHERE tipo='vendedor'
     ORDER BY FIELD(estado_verificacion,'pendiente','sin_enviar','rechazado','aprobado'), created_at DESC
 ")->fetchAll();
-
-// Solicitudes de admin pendientes
-$solicitudes_admin = db()->query("
-    SELECT sa.*,
-           t.nombre AS trab_nombre, t.email AS trab_email,
-           t.documento_id,
-           v.nombre_panaderia, v.nombre AS vend_nombre
-    FROM   solicitudes_admin sa
-    JOIN   usuarios t ON t.id = sa.trabajador_id
-    JOIN   usuarios v ON v.id = sa.vendedor_id
-    ORDER  BY sa.estado ASC, sa.created_at DESC
-")->fetchAll();
-$pendientes_count = count(array_filter($solicitudes_admin, fn($s) => $s['estado'] === 'pendiente'));
 
 // Sucursales agrupadas por vendedor
 $sucursales_por_vendedor = [];
@@ -597,7 +510,6 @@ foreach ($vendedores as $v) {
           </span>
         <?php endif; ?>
       </button>
-      <button class="tab-btn" data-tab="tab-catalogo">📦 Catálogo Base</button>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
@@ -894,65 +806,6 @@ foreach ($vendedores as $v) {
           </div>
         <?php endforeach; ?>
       </div>
-    </div>
-
-    <div id="tab-solicitudes-admin" class="tab-panel">
-      <h3 style="margin-bottom:18px">👑 Solicitudes de Admin de Panadería</h3>
-      <?php if (empty($solicitudes_admin)): ?>
-        <p style="color:var(--gris);text-align:center;padding:40px">No hay solicitudes aún.</p>
-      <?php else: ?>
-        <div style="display:grid;gap:14px">
-          <?php foreach ($solicitudes_admin as $s): ?>
-            <?php
-            $bc = match ($s['estado']) {
-              'pendiente' => 'background:#FFF8E1;color:#F57F17',
-              'aprobado'  => 'background:#E8F5E9;color:#2E7D32',
-              'rechazado' => 'background:#FFEBEE;color:#C62828',
-            };
-            $bt = match ($s['estado']) {
-              'pendiente' => '⏳ Pendiente',
-              'aprobado'  => '✅ Aprobado',
-              'rechazado' => '❌ Rechazado',
-            };
-            ?>
-            <div style="background:var(--blanco);border-radius:var(--radio-lg);box-shadow:var(--sombra);
-                        padding:18px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-              <div style="flex:1;min-width:200px">
-                <p style="font-weight:700;font-size:1rem;margin:0 0 3px">
-                  <?= h($s['trab_nombre']) ?>
-                  <span style="font-size:0.8rem;color:var(--gris);font-weight:400">
-                    · <?= h($s['trab_email']) ?>
-                    <?= $s['documento_id'] ? ' · DNI: ' . h($s['documento_id']) : '' ?>
-                  </span>
-                </p>
-                <p style="color:var(--gris);font-size:0.83rem;margin:0">
-                  Panadería: <strong><?= h($s['nombre_panaderia'] ?: $s['vend_nombre']) ?></strong>
-                </p>
-                <p style="font-size:0.76rem;color:var(--gris);margin:4px 0 0">
-                  Solicitado: <?= date('d/m/Y H:i', strtotime($s['created_at'])) ?>
-                </p>
-              </div>
-              <span style="padding:5px 14px;border-radius:50px;font-size:0.78rem;font-weight:700;<?= $bc ?>">
-                <?= $bt ?>
-              </span>
-              <?php if ($s['estado'] === 'pendiente'): ?>
-                <div style="display:flex;gap:8px">
-                  <button onclick="resolverAdmin(<?= $s['id'] ?>, 'aprobar_admin_pan')"
-                    style="padding:8px 16px;background:#E8F5E9;color:#2E7D32;
-                                 border:none;border-radius:50px;font-weight:700;cursor:pointer">
-                    ✅ Aprobar
-                  </button>
-                  <button onclick="resolverAdmin(<?= $s['id'] ?>, 'rechazar_admin_pan')"
-                    style="padding:8px 16px;background:#FFEBEE;color:#C62828;
-                                 border:none;border-radius:50px;font-weight:700;cursor:pointer">
-                    ❌ Rechazar
-                  </button>
-                </div>
-              <?php endif; ?>
-            </div>
-          <?php endforeach; ?>
-        </div>
-      <?php endif; ?>
     </div>
 
   </div>
@@ -1322,101 +1175,6 @@ foreach ($vendedores as $v) {
 
     });
 
-    function resolverAdmin(solId, accion) {
-      const msg = accion === 'aprobar_admin_pan' ? '¿Aprobar este trabajador como admin de la panadería?' : '¿Rechazar esta solicitud?';
-      if (!confirm(msg)) return;
-      fetch('admin.php', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          },
-          body: `accion=${accion}&sol_id=${solId}`
-        })
-        .then(r => r.json())
-        .then(d => {
-          toast(d.msg, d.ok ? 'ok' : 'err');
-          if (d.ok) setTimeout(() => location.reload(), 1200);
-        });
-    }
-
-    // ══ CATÁLOGO BASE ════════════════════════════════════════════
-    function abrirFormCat() {
-      document.getElementById('form-cat-titulo').textContent = 'Nuevo producto';
-      document.getElementById('form-cat').reset();
-      document.querySelector('#form-cat [name="accion"]').value = 'add_catalogo';
-      document.querySelector('#form-cat [name="cid"]').value = '';
-      document.getElementById('form-cat-wrap').style.display = 'block';
-      document.getElementById('form-cat-wrap').scrollIntoView({
-        behavior: 'smooth'
-      });
-    }
-
-    function cerrarFormCat() {
-      document.getElementById('form-cat-wrap').style.display = 'none';
-    }
-
-    function editarCat(id, nombre, descripcion, categoria) {
-      document.getElementById('form-cat-titulo').textContent = 'Editar producto';
-      const f = document.getElementById('form-cat');
-      f.querySelector('[name="accion"]').value = 'edit_catalogo';
-      f.querySelector('[name="cid"]').value = id;
-      f.querySelector('[name="nombre"]').value = nombre;
-      f.querySelector('[name="descripcion"]').value = descripcion;
-      f.querySelector('[name="categoria"]').value = categoria;
-      document.getElementById('form-cat-wrap').style.display = 'block';
-      document.getElementById('form-cat-wrap').scrollIntoView({
-        behavior: 'smooth'
-      });
-    }
-
-    function toggleCat(id, activo) {
-      const msg = activo ? '¿Desactivar este producto del catálogo?' : '¿Activar este producto?';
-      if (!confirm(msg)) return;
-      fetch('admin.php', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: `accion=toggle_catalogo&cid=${id}`
-      }).then(r => r.json()).then(d => {
-        toast(d.msg, d.ok ? 'ok' : 'err');
-        if (d.ok) setTimeout(() => location.reload(), 900);
-      });
-    }
-
-    function eliminarCat(id, nombre) {
-      if (!confirm(`¿Eliminar "${nombre}" del catálogo? Esta acción no se puede deshacer.`)) return;
-      fetch('admin.php', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: `accion=delete_catalogo&cid=${id}`
-      }).then(r => r.json()).then(d => {
-        toast(d.msg, d.ok ? 'ok' : 'err');
-        if (d.ok) setTimeout(() => location.reload(), 900);
-      });
-    }
-
-    document.getElementById('form-cat')?.addEventListener('submit', async function(e) {
-      e.preventDefault();
-      const btn = document.getElementById('btn-cat-submit');
-      btn.disabled = true;
-      btn.textContent = 'Guardando...';
-      const fd = new FormData(this);
-      const res = await fetch('admin.php', {
-        method: 'POST',
-        body: fd
-      });
-      const data = await res.json();
-      toast(data.msg, data.ok ? 'ok' : 'err');
-      if (data.ok) setTimeout(() => location.reload(), 900);
-      else {
-        btn.disabled = false;
-        btn.textContent = 'Guardar';
-      }
-    });
-
     // ── Tipo Sucursal ────────────────────────────────────────────────────
     document.querySelectorAll('[id^="tipo-suc-"]').forEach(sel => {
       sel.addEventListener('change', function() {
@@ -1445,8 +1203,6 @@ foreach ($vendedores as $v) {
           if (d.ok) setTimeout(() => location.reload(), 900);
         });
     }
-
-    
   </script>
 </body>
 

@@ -3,8 +3,9 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/includes/functions.php';
 requerir_vendedor();
 
-$u   = usuario_actual();
-$uid = $u['id'];
+$u        = usuario_actual();
+$uid      = $u['id'];
+$tipo_suc = $u['tipo_sucursal'] ?? null; // 'padre', 'hija', o null (sin clasificar)
 
 $seccion = $_GET['sec'] ?? 'inicio';
 $msg_ok  = '';
@@ -121,9 +122,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     exit;
   }
 
-  /* ── Solo Admin de Panadería puede gestionar trabajadores/sucursales */
-  if (!$u['is_admin_pan'] && in_array($accion, ['set_identificador','crear_trabajador','eliminar_trabajador','solicitar_admin','crear_sucursal','eliminar_sucursal'])) {
-    $msg_err = 'Solo el Admin de la Panadería puede realizar esta acción.';
+  /* ── Solo Encargados clasificados pueden gestionar trabajadores */
+  if (!$tipo_suc && in_array($accion, ['set_identificador','crear_trabajador','eliminar_trabajador'])) {
+    $msg_err = 'Tu cuenta aún no tiene un rol asignado. Contactá al Administrador.';
     $seccion = 'inicio';
   }
 
@@ -185,55 +186,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $msg_ok  = 'Trabajador eliminado.';
     $seccion = 'trabajadores';
   }
-
-  /* ── Solicitar admin para trabajador ──────────────────────────────── */
-  if ($accion === 'solicitar_admin') {
-    $trab_id = (int)($_POST['trab_id'] ?? 0);
-    if ($trab_id) {
-      $chk = db()->prepare("SELECT id FROM usuarios WHERE id=? AND tipo='trabajador' AND panaderia_id=?");
-      $chk->execute([$trab_id, $uid]);
-      if ($chk->fetch()) {
-        $existe = db()->prepare("SELECT id, estado FROM solicitudes_admin WHERE trabajador_id=? AND vendedor_id=?");
-        $existe->execute([$trab_id, $uid]);
-        $sol = $existe->fetch();
-        if ($sol) {
-          $msg_err = $sol['estado'] === 'pendiente'
-            ? 'Ya hay una solicitud pendiente para este trabajador.'
-            : 'Este trabajador ya tiene admin aprobado.';
-        } else {
-          db()->prepare("INSERT INTO solicitudes_admin (trabajador_id, vendedor_id) VALUES (?,?)")
-            ->execute([$trab_id, $uid]);
-          $msg_ok = '¡Solicitud enviada al administrador! Revisará en breve 📨';
-        }
-      }
-    }
-    $seccion = 'trabajadores';
-  }
-
-  /* ── Crear sucursal ───────────────────────────────────────────────── */
-  if ($accion === 'crear_sucursal') {
-    $nom_suc = trim($_POST['nombre']    ?? '');
-    $dir_suc = trim($_POST['direccion'] ?? '') ?: null;
-    $tel_suc = trim($_POST['telefono']  ?? '') ?: null;
-    if (!$nom_suc) {
-      $msg_err = 'El nombre de la sucursal es obligatorio.';
-      $seccion = 'sucursales';
-    } else {
-      db()->prepare("INSERT INTO sucursales (vendedor_id, nombre, direccion, telefono) VALUES (?,?,?,?)")
-        ->execute([$uid, $nom_suc, $dir_suc, $tel_suc]);
-      $msg_ok  = '¡Sucursal ' . $nom_suc . ' creada! ✅';
-      $seccion = 'sucursales';
-    }
-  }
-
-  /* ── Eliminar sucursal ────────────────────────────────────────────── */
-  if ($accion === 'eliminar_sucursal') {
-    $suc_id = (int)($_POST['suc_id'] ?? 0);
-    db()->prepare("DELETE FROM sucursales WHERE id=? AND vendedor_id=?")->execute([$suc_id, $uid]);
-    $msg_ok  = 'Sucursal eliminada.';
-    $seccion = 'sucursales';
-  }
-
+  
   /* ── Guardar perfil ───────────────────────────────────────────────── */
   if ($accion === 'perfil') {
     $nombre_pan = trim($_POST['nombre_panaderia'] ?? '');
@@ -341,21 +294,25 @@ $trabajadores = db()->query("
     ORDER BY nombre
 ")->fetchAll();
 
-// Estado de solicitudes por trabajador
-$solicitudes_map = [];
-if (!empty($trabajadores)) {
-  $tids = implode(',', array_map('intval', array_column($trabajadores, 'id')));
-  $sols = db()->query("SELECT * FROM solicitudes_admin WHERE trabajador_id IN ($tids)")->fetchAll();
-  foreach ($sols as $s) $solicitudes_map[$s['trabajador_id']] = $s;
+// ── Sucursales Hija de este Padre ─────────────────────────────────────────
+$mis_hijas = [];
+if ($tipo_suc === 'padre') {
+  $hijas_stmt = db()->prepare("
+      SELECT id, nombre, nombre_panaderia, email, avatar_url, estado_verificacion
+      FROM usuarios
+      WHERE tipo='vendedor' AND sucursal_padre_id = ?
+      ORDER BY nombre_panaderia
+  ");
+  $hijas_stmt->execute([$uid]);
+  $mis_hijas = $hijas_stmt->fetchAll();
 }
 
-// ── Sucursales de esta panadería ──────────────────────────────────────────
-$mis_sucursales = [];
-try {
-  $suc_stmt = db()->prepare("SELECT * FROM sucursales WHERE vendedor_id = ? ORDER BY nombre");
-  $suc_stmt->execute([$uid]);
-  $mis_sucursales = $suc_stmt->fetchAll();
-} catch (Exception $e) { /* tabla aún no existe */
+// ── Padre de esta Hija ────────────────────────────────────────────────────
+$mi_padre = null;
+if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
+  $padre_stmt = db()->prepare("SELECT id, nombre, nombre_panaderia, email FROM usuarios WHERE id=?");
+  $padre_stmt->execute([$u['sucursal_padre_id']]);
+  $mi_padre = $padre_stmt->fetch() ?: null;
 }
 ?>
 <!DOCTYPE html>
@@ -383,8 +340,13 @@ try {
       </div>
       <ul class="sidebar-nav">
         <li><a href="vendedor.php?sec=inicio" class="<?= $seccion === 'inicio'    ? 'on' : '' ?>"><span class="nav-ico">📊</span> Inicio</a></li>
-        <li><a href="vendedor.php?sec=productos" class="<?= $seccion === 'productos' ? 'on' : '' ?>"><span class="nav-ico">🍞</span> Mis Productos</a></li>
-        <li><a href="vendedor.php?sec=add" class="<?= $seccion === 'add'       ? 'on' : '' ?>"><span class="nav-ico">➕</span> Agregar Producto</a></li>
+        <li><a href="vendedor.php?sec=productos" class="<?= $seccion === 'productos' ? 'on' : '' ?>">
+          <span class="nav-ico">🍞</span>
+          <?= $tipo_suc === 'hija' ? 'Productos Heredados' : 'Mis Productos' ?>
+        </a></li>
+        <?php if ($tipo_suc === 'padre'): ?>
+        <li><a href="vendedor.php?sec=add" class="<?= $seccion === 'add' ? 'on' : '' ?>"><span class="nav-ico">➕</span> Agregar Producto</a></li>
+        <?php endif; ?>
         <li>
           <a href="vendedor.php?sec=pedidos" class="<?= $seccion === 'pedidos' ? 'on' : '' ?>">
             <span class="nav-ico">📦</span> Pedidos
@@ -396,9 +358,12 @@ try {
             <?php endif; ?>
           </a>
         </li>
-        <?php if ($u['is_admin_pan']): ?>
+        <?php if ($tipo_suc === 'padre'): ?>
+        <li><a href="vendedor.php?sec=hijas" class="<?= $seccion === 'hijas' ? 'on' : '' ?>"><span class="nav-ico">🏬</span> Mis Sucursales Hija</a></li>
+        <li><a href="vendedor.php?sec=metricas" class="<?= $seccion === 'metricas' ? 'on' : '' ?>"><span class="nav-ico">�</span> Métricas</a></li>
+        <?php endif; ?>
+        <?php if ($tipo_suc): ?>
         <li><a href="vendedor.php?sec=trabajadores" class="<?= $seccion === 'trabajadores' ? 'on' : '' ?>"><span class="nav-ico">👥</span> Trabajadores</a></li>
-        <li><a href="vendedor.php?sec=sucursales" class="<?= $seccion === 'sucursales'   ? 'on' : '' ?>"><span class="nav-ico">🏬</span> Sucursales</a></li>
         <?php endif; ?>
         <li><a href="vendedor.php?sec=perfil" class="<?= $seccion === 'perfil' ? 'on' : '' ?>"><span class="nav-ico">⚙️</span> Mi Perfil</a></li>
         <li>
@@ -430,23 +395,36 @@ try {
               <?php
               $titulos = [
                 'inicio'       => 'Mi Panel',
-                'productos'    => 'Mis Productos',
+                'productos'    => $tipo_suc === 'hija' ? 'Productos Heredados' : 'Mis Productos',
                 'add'          => ($edit_prod ? 'Editar Producto' : 'Agregar Producto'),
                 'pedidos'      => 'Pedidos recibidos',
                 'perfil'       => 'Mi Perfil',
                 'documentos'   => '📂 Mis Documentos',
                 'trabajadores' => '👥 Mis Trabajadores',
-                'sucursales'   => '🏬 Mis Sucursales',
+                'hijas'        => '🏬 Mis Sucursales Hija',
+                'metricas'     => '📈 Métricas de Red',
               ];
               echo $titulos[$seccion] ?? 'Mi Panel';
               ?>
             </h1>
-            <p style="color:var(--gris);font-size:0.9rem;margin-top:2px">
+            <p style="color:var(--gris);font-size:0.9rem;margin-top:2px;display:flex;align-items:center;gap:8px">
               <?= h($u['nombre_panaderia'] ?: $u['nombre']) ?> — <?= date('d/m/Y') ?>
+              <?php if ($tipo_suc === 'padre'): ?>
+                <span style="background:#E3F2FD;color:#1565C0;font-size:0.72rem;font-weight:700;
+                             padding:2px 9px;border-radius:50px">🔵 Sucursal Padre</span>
+              <?php elseif ($tipo_suc === 'hija'): ?>
+                <span style="background:#F3E5F5;color:#6A1B9A;font-size:0.72rem;font-weight:700;
+                             padding:2px 9px;border-radius:50px">🟣 Sucursal Hija
+                  <?= $mi_padre ? '· ' . h($mi_padre['nombre_panaderia'] ?: $mi_padre['nombre']) : '' ?>
+                </span>
+              <?php else: ?>
+                <span style="background:#FFF8E1;color:#E65100;font-size:0.72rem;font-weight:700;
+                             padding:2px 9px;border-radius:50px">⏳ Sin clasificar</span>
+              <?php endif; ?>
             </p>
           </div>
         </div>
-        <?php if (in_array($seccion, ['inicio', 'productos'])): ?>
+        <?php if ($tipo_suc === 'padre' && in_array($seccion, ['inicio', 'productos'])): ?>
           <a href="vendedor.php?sec=add" class="btn btn-naranja btn-sm">+ Nuevo producto</a>
         <?php endif; ?>
       </div>
@@ -472,6 +450,23 @@ try {
       <?php endif; ?>
 
       <?php /* ══════════════════ INICIO ══════════════════ */ if ($seccion === 'inicio'): ?>
+
+        <?php if (!$tipo_suc): ?>
+          <div style="background:#FFF8E1;border-left:4px solid var(--naranja);padding:20px 24px;
+                      border-radius:var(--radio);margin-bottom:24px">
+            <h3 style="margin:0 0 6px;color:#E65100">⏳ Rol pendiente de asignación</h3>
+            <p style="margin:0;color:#BF360C;font-size:0.92rem">
+              Tu cuenta fue aprobada pero el Administrador todavía no te asignó un rol de sucursal
+              (<strong>Padre</strong> o <strong>Hija</strong>).
+              Mientras tanto podés completar tu perfil y subir tus documentos.
+              Una vez asignado el rol vas a poder gestionar productos y trabajadores.
+            </p>
+            <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
+              <a href="vendedor.php?sec=perfil" class="btn btn-naranja btn-sm">Completar perfil →</a>
+              <a href="vendedor.php?sec=documentos" class="btn btn-ghost btn-sm">Mis documentos →</a>
+            </div>
+          </div>
+        <?php endif; ?>
 
         <?php if ($u['estado_verificacion'] !== 'aprobado'): ?>
           <div class="onboarding">
@@ -640,6 +635,16 @@ try {
         </div>
 
       <?php /* ══════════════════ AGREGAR / EDITAR ══════════════════ */ elseif ($seccion === 'add'): ?>
+
+        <?php if ($tipo_suc !== 'padre'): ?>
+          <div style="background:#FFEBEE;border-left:4px solid var(--rojo);padding:20px 24px;border-radius:var(--radio)">
+            <h3 style="margin:0 0 6px;color:#C62828">🚫 Acción no permitida</h3>
+            <p style="margin:0;color:#B71C1C;font-size:0.92rem">
+              Las Sucursales Hija no pueden crear productos propios. Los productos son asignados por la Sucursal Padre.
+            </p>
+            <a href="vendedor.php?sec=productos" class="btn btn-ghost btn-sm" style="margin-top:14px;display:inline-block">← Volver</a>
+          </div>
+        <?php else: ?>
 
         <div class="sec-card" style="max-width:680px">
           <div class="sec-card-top">
@@ -875,6 +880,8 @@ try {
           </div>
         </div>
 
+        <?php endif; // fin if tipo_suc === 'padre' para sec=add ?>
+
       <?php /* ══════════════════ TRABAJADORES ══════════════════ */ elseif ($seccion === 'trabajadores'): ?>
 
         <div class="sec-card">
@@ -1043,7 +1050,43 @@ try {
           </div>
         </div>
 
-      <?php /* ══════════════════ SUCURSALES ══════════════════ */ elseif ($seccion === 'sucursales'): ?>
+      <?php /* ══════════════════ MIS HIJAS ══════════════════ */ elseif ($seccion === 'hijas'): ?>
+
+        <?php if ($tipo_suc !== 'padre'): ?>
+          <div style="background:#FFEBEE;border-left:4px solid var(--rojo);padding:20px 24px;border-radius:var(--radio)">
+            <p style="margin:0;color:#C62828;font-weight:700">🚫 Solo el Encargado Padre puede ver esta sección.</p>
+          </div>
+        <?php else: ?>
+          <div class="sec-card">
+            <div class="sec-card-top">
+              <h2>🏬 Mis Sucursales Hija (<?= count($mis_hijas) ?>)</h2>
+            </div>
+            <?php if (empty($mis_hijas)): ?>
+              <p style="color:var(--gris);text-align:center;padding:32px 0">
+                Todavía no tenés sucursales Hija vinculadas.<br>
+                <small>El Administrador Global debe asignarles el rol "Hija" y vincularte como Padre.</small>
+              </p>
+            <?php else: ?>
+              <div style="display:grid;gap:12px">
+                <?php foreach ($mis_hijas as $h): ?>
+                  <div style="padding:16px 20px;background:var(--crema);border-radius:var(--radio);
+                              display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+                    <?= avatar_html($h, '42px', '0.9rem') ?>
+                    <div style="flex:1;min-width:160px">
+                      <p style="font-weight:700;margin:0 0 2px"><?= h($h['nombre_panaderia'] ?: $h['nombre']) ?></p>
+                      <p style="color:var(--gris);font-size:0.82rem;margin:0"><?= h($h['email']) ?></p>
+                    </div>
+                    <span style="padding:4px 12px;border-radius:50px;font-size:0.78rem;font-weight:700;
+                      background:<?= $h['estado_verificacion'] === 'aprobado' ? '#E8F5E9' : '#FFF8E1' ?>;
+                      color:<?= $h['estado_verificacion'] === 'aprobado' ? '#2E7D32' : '#E65100' ?>">
+                      <?= $h['estado_verificacion'] === 'aprobado' ? '✅ Activa' : '⏳ ' . h($h['estado_verificacion']) ?>
+                    </span>
+                  </div>
+                <?php endforeach; ?>
+              </div>
+            <?php endif; ?>
+          </div>
+        <?php endif; ?>
 
         <div class="sec-card">
           <div class="sec-card-top">
