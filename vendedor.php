@@ -123,7 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   }
 
   /* ── Solo Encargados clasificados pueden gestionar trabajadores */
-  if (!$tipo_suc && in_array($accion, ['set_identificador','crear_trabajador','eliminar_trabajador'])) {
+  if (!$tipo_suc && in_array($accion, ['set_identificador', 'crear_trabajador', 'eliminar_trabajador'])) {
     $msg_err = 'Tu cuenta aún no tiene un rol asignado. Contactá al Administrador.';
     $seccion = 'inicio';
   }
@@ -186,7 +186,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $msg_ok  = 'Trabajador eliminado.';
     $seccion = 'trabajadores';
   }
-  
+
+  /* ── Asignar producto a Hija (solo Padre) ────────────────────────────── */
+  if ($accion === 'asignar_herencia' && $tipo_suc === 'padre') {
+    $prod_id    = (int)($_POST['producto_id']   ?? 0);
+    $sucursal_id    = (int)($_POST['sucursal_id']       ?? 0);
+    $precio_min = (float)($_POST['precio_minimo'] ?? 0);
+
+    $chk = db()->prepare("SELECT id, precio FROM productos WHERE id=? AND vendedor_id=?");
+    $chk->execute([$prod_id, $uid]);
+    $prod = $chk->fetch();
+
+    if (!$prod || !$sucursal_id || $precio_min <= 0) {
+      $msg_err = 'Completá todos los campos correctamente.';
+    } elseif ($precio_min > $prod['precio']) {
+      $msg_err = 'El precio mínimo no puede superar el precio del producto (' . precio($prod['precio']) . ').';
+    } else {
+      $chk2 = db()->prepare("SELECT id FROM usuarios WHERE id=? AND sucursal_padre_id=? AND tipo='vendedor'");
+      $chk2->execute([$sucursal_id, $uid]);
+      if (!$chk2->fetch()) {
+        $msg_err = 'Sucursal Hija inválida.';
+      } else {
+        try {
+          db()->prepare("
+            INSERT INTO herencia_productos (producto_id, padre_id, sucursal_id, precio_minimo)
+            VALUES (?,?,?,?)
+            ON DUPLICATE KEY UPDATE precio_minimo=VALUES(precio_minimo), aceptado=0, precio_sucursal=NULL
+          ")->execute([$prod_id, $uid, $sucursal_id, $precio_min]);
+          $msg_ok = '¡Producto asignado a la sucursal Hija! ✅';
+        } catch (Exception $e) {
+          $msg_err = 'Error: ' . $e->getMessage();
+        }
+      }
+    }
+    $seccion = 'hijas';
+  }
+
+  /* ── Aceptar herencia con precio propio (solo Hija) ──────────────────── */
+  if ($accion === 'aceptar_herencia' && $tipo_suc === 'hija') {
+    $her_id      = (int)($_POST['herencia_id']  ?? 0);
+    $precio_sucursal = (float)($_POST['precio_sucursal'] ?? 0);
+
+    $chk = db()->prepare("SELECT id, precio_minimo FROM herencia_productos WHERE id=? AND sucursal_id=?");
+    $chk->execute([$her_id, $uid]);
+    $her = $chk->fetch();
+
+    if (!$her) {
+      $msg_err = 'Herencia no encontrada.';
+    } elseif ($precio_sucursal < $her['precio_minimo']) {
+      $msg_err = 'El precio debe ser ≥ al precio mínimo (' . precio($her['precio_minimo']) . ').';
+    } else {
+      db()->prepare("UPDATE herencia_productos SET aceptado=1, precio_sucursal=? WHERE id=? AND sucursal_id=?")
+        ->execute([$precio_sucursal, $her_id, $uid]);
+      $msg_ok = '¡Producto aceptado y activo en tu tienda! ✅';
+    }
+    $seccion = 'productos';
+  }
+
+  /* ── Revocar herencia (Hija deja de venderlo) ────────────────────────── */
+  if ($accion === 'revocar_herencia' && $tipo_suc === 'hija') {
+    $her_id = (int)($_POST['herencia_id'] ?? 0);
+    db()->prepare("UPDATE herencia_productos SET aceptado=0, precio_sucursal=NULL WHERE id=? AND sucursal_id=?")
+      ->execute([$her_id, $uid]);
+    $msg_ok  = 'Producto removido de tu tienda.';
+    $seccion = 'productos';
+  }
+
   /* ── Guardar perfil ───────────────────────────────────────────────── */
   if ($accion === 'perfil') {
     $nombre_pan = trim($_POST['nombre_panaderia'] ?? '');
@@ -314,6 +379,40 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
   $padre_stmt->execute([$u['sucursal_padre_id']]);
   $mi_padre = $padre_stmt->fetch() ?: null;
 }
+
+// ── Productos heredados (para Hija) ──────────────────────────────────────
+$herencias_hija = [];
+if ($tipo_suc === 'hija') {
+  $her_stmt = db()->prepare("
+    SELECT h.id, h.precio_minimo, h.precio_sucursal, h.aceptado,
+           p.nombre, p.descripcion, p.categoria, p.imagen_url, p.unidad_venta,
+           u.nombre_panaderia AS padre_nombre
+    FROM herencia_productos h
+    JOIN productos p ON p.id = h.producto_id
+    JOIN usuarios  u ON u.id = h.padre_id
+    WHERE h.sucursal_id = ?
+    ORDER BY h.aceptado ASC, p.nombre ASC
+  ");
+  $her_stmt->execute([$uid]);
+  $herencias_hija = $her_stmt->fetchAll();
+}
+
+// ── Asignaciones hechas por el Padre ─────────────────────────────────────
+$herencias_padre = [];
+if ($tipo_suc === 'padre') {
+  $herp_stmt = db()->prepare("
+    SELECT h.id, h.precio_minimo, h.precio_sucursal, h.aceptado,
+           p.nombre AS prod_nombre, p.precio AS precio_original, p.imagen_url, p.categoria,
+           u.nombre_panaderia AS hija_nombre, u.id AS hija_uid
+    FROM herencia_productos h
+    JOIN productos p ON p.id = h.producto_id
+    JOIN usuarios  u ON u.id = h.sucursal_id
+    WHERE h.padre_id = ?
+    ORDER BY u.nombre_panaderia, p.nombre
+  ");
+  $herp_stmt->execute([$uid]);
+  $herencias_padre = $herp_stmt->fetchAll();
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -341,11 +440,11 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
       <ul class="sidebar-nav">
         <li><a href="vendedor.php?sec=inicio" class="<?= $seccion === 'inicio'    ? 'on' : '' ?>"><span class="nav-ico">📊</span> Inicio</a></li>
         <li><a href="vendedor.php?sec=productos" class="<?= $seccion === 'productos' ? 'on' : '' ?>">
-          <span class="nav-ico">🍞</span>
-          <?= $tipo_suc === 'hija' ? 'Productos Heredados' : 'Mis Productos' ?>
-        </a></li>
+            <span class="nav-ico">🍞</span>
+            <?= $tipo_suc === 'hija' ? 'Productos Heredados' : 'Mis Productos' ?>
+          </a></li>
         <?php if ($tipo_suc === 'padre'): ?>
-        <li><a href="vendedor.php?sec=add" class="<?= $seccion === 'add' ? 'on' : '' ?>"><span class="nav-ico">➕</span> Agregar Producto</a></li>
+          <li><a href="vendedor.php?sec=add" class="<?= $seccion === 'add' ? 'on' : '' ?>"><span class="nav-ico">➕</span> Agregar Producto</a></li>
         <?php endif; ?>
         <li>
           <a href="vendedor.php?sec=pedidos" class="<?= $seccion === 'pedidos' ? 'on' : '' ?>">
@@ -359,11 +458,11 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
           </a>
         </li>
         <?php if ($tipo_suc === 'padre'): ?>
-        <li><a href="vendedor.php?sec=hijas" class="<?= $seccion === 'hijas' ? 'on' : '' ?>"><span class="nav-ico">🏬</span> Mis Sucursales Hija</a></li>
-        <li><a href="vendedor.php?sec=metricas" class="<?= $seccion === 'metricas' ? 'on' : '' ?>"><span class="nav-ico">�</span> Métricas</a></li>
+          <li><a href="vendedor.php?sec=hijas" class="<?= $seccion === 'hijas' ? 'on' : '' ?>"><span class="nav-ico">🏬</span> Mis Sucursales Hija</a></li>
+          <li><a href="vendedor.php?sec=metricas" class="<?= $seccion === 'metricas' ? 'on' : '' ?>"><span class="nav-ico">�</span> Métricas</a></li>
         <?php endif; ?>
         <?php if ($tipo_suc): ?>
-        <li><a href="vendedor.php?sec=trabajadores" class="<?= $seccion === 'trabajadores' ? 'on' : '' ?>"><span class="nav-ico">👥</span> Trabajadores</a></li>
+          <li><a href="vendedor.php?sec=trabajadores" class="<?= $seccion === 'trabajadores' ? 'on' : '' ?>"><span class="nav-ico">👥</span> Trabajadores</a></li>
         <?php endif; ?>
         <li><a href="vendedor.php?sec=perfil" class="<?= $seccion === 'perfil' ? 'on' : '' ?>"><span class="nav-ico">⚙️</span> Mi Perfil</a></li>
         <li>
@@ -554,6 +653,86 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
 
       <?php /* ══════════════════ MIS PRODUCTOS ══════════════════ */ elseif ($seccion === 'productos'): ?>
 
+        <?php if ($tipo_suc === 'hija'): ?>
+        <!-- VISTA HIJA: productos heredados -->
+        <div class="sec-card">
+          <div class="sec-card-top">
+            <h2>🍞 Productos Heredados</h2>
+            <?php if ($mi_padre): ?>
+              <span style="font-size:0.82rem;color:var(--gris)">
+                De: <strong><?= h($mi_padre['nombre_panaderia'] ?: $mi_padre['nombre']) ?></strong>
+              </span>
+            <?php endif; ?>
+          </div>
+
+          <?php if (empty($herencias_hija)): ?>
+            <div style="text-align:center;padding:48px 0;color:var(--gris)">
+              <span style="font-size:3rem;display:block;margin-bottom:12px">⏳</span>
+              <p>Tu sucursal Padre todavía no te asignó productos.</p>
+            </div>
+          <?php else: ?>
+            <div style="display:grid;gap:14px">
+              <?php foreach ($herencias_hija as $h): ?>
+                <div style="background:var(--crema);border-radius:var(--radio);padding:16px 20px;
+                            display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+                  <!-- Imagen/emoji -->
+                  <div style="width:52px;height:52px;border-radius:var(--radio);
+                              background:var(--crema-dark);display:flex;align-items:center;
+                              justify-content:center;font-size:1.6rem;flex-shrink:0">
+                    <?php if ($h['imagen_url']): ?>
+                      <img src="<?= h($h['imagen_url']) ?>"
+                           style="width:100%;height:100%;object-fit:cover;border-radius:var(--radio)" alt="">
+                    <?php else: ?>
+                      <?= cat_emoji($h['categoria']) ?>
+                    <?php endif; ?>
+                  </div>
+
+                  <!-- Info -->
+                  <div style="flex:1;min-width:160px">
+                    <p style="font-weight:700;font-size:1rem;margin:0 0 4px"><?= h($h['nombre']) ?></p>
+                    <p style="color:var(--gris);font-size:0.82rem;margin:0 0 6px">
+                      Precio mínimo: <strong><?= precio((float)$h['precio_minimo']) ?></strong>
+                      <?= $h['aceptado'] ? ' · Tu precio: <strong>' . precio((float)$h['precio_sucursal']) . '</strong>' : '' ?>
+                    </p>
+
+                    <?php if (!$h['aceptado']): ?>
+                    <!-- Formulario para aceptar -->
+                    <form method="POST" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+                      <input type="hidden" name="accion" value="aceptar_herencia">
+                      <input type="hidden" name="herencia_id" value="<?= $h['id'] ?>">
+                      <input type="number" name="precio_sucursal"
+                             min="<?= $h['precio_minimo'] ?>" step="0.01" required
+                             placeholder="Tu precio (mín. <?= precio((float)$h['precio_minimo']) ?>)"
+                             style="width:200px;padding:6px 10px;border-radius:var(--radio);
+                                    border:1px solid #ccc;font-size:0.88rem">
+                      <button type="submit" class="btn btn-naranja btn-sm">✅ Aceptar y activar</button>
+                    </form>
+                    <?php else: ?>
+                    <!-- Ya aceptado: opción de revocar -->
+                    <form method="POST" onsubmit="return confirm('¿Dejar de vender este producto?')"
+                          style="margin-top:8px">
+                      <input type="hidden" name="accion" value="revocar_herencia">
+                      <input type="hidden" name="herencia_id" value="<?= $h['id'] ?>">
+                      <button type="submit" class="btn btn-ghost btn-sm"
+                              style="color:var(--rojo)">✗ Dejar de vender</button>
+                    </form>
+                    <?php endif; ?>
+                  </div>
+
+                  <!-- Badge estado -->
+                  <span style="padding:4px 12px;border-radius:50px;font-size:0.78rem;font-weight:700;align-self:flex-start;
+                    background:<?= $h['aceptado'] ? '#E8F5E9' : '#FFF8E1' ?>;
+                    color:<?= $h['aceptado'] ? '#2E7D32' : '#E65100' ?>">
+                    <?= $h['aceptado'] ? '✅ Activo' : '⏳ Pendiente' ?>
+                  </span>
+                </div>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
+        </div>
+
+        <?php else: ?>
+        <!-- VISTA PADRE/sin clasificar: productos propios -->
         <div class="sec-card">
           <div class="sec-card-top">
             <h2>Mis Productos</h2>
@@ -634,6 +813,9 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
           <?php endif; ?>
         </div>
 
+        </div>
+        <?php endif; // fin if hija / else padre ?>
+
       <?php /* ══════════════════ AGREGAR / EDITAR ══════════════════ */ elseif ($seccion === 'add'): ?>
 
         <?php if ($tipo_suc !== 'padre'): ?>
@@ -646,150 +828,153 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
           </div>
         <?php else: ?>
 
-        <div class="sec-card" style="max-width:680px">
-          <div class="sec-card-top">
-            <h2><?= $edit_prod ? '✏️ Editar Producto' : '➕ Agregar Producto' ?></h2>
-            <?php if ($edit_prod): ?>
-              <a href="vendedor.php?sec=productos" class="btn btn-ghost btn-sm">Cancelar</a>
-            <?php endif; ?>
-          </div>
-
-          <form method="POST" enctype="multipart/form-data">
-            <input type="hidden" name="accion" value="<?= $edit_prod ? 'edit_producto' : 'add_producto' ?>">
-            <?php if ($edit_prod): ?>
-              <input type="hidden" name="pid" value="<?= $edit_prod['id'] ?>">
-            <?php endif; ?>
-
-            <div class="form-row">
-              <div class="field">
-                <label>Nombre *</label>
-                <input type="text" name="nombre"
-                  value="<?= h($edit_prod['nombre'] ?? '') ?>"
-                  placeholder="Ej: Pan Francés" required>
-              </div>
-              <div class="field">
-                <label>Categoría *</label>
-                <select name="cat">
-                  <?php foreach (['pan' => '🍞 Pan', 'facturas' => '🥐 Facturas', 'galletas' => '🍪 Galletas', 'cakes' => '🎂 Cakes', 'otro' => '✨ Otro'] as $k => $v): ?>
-                    <option value="<?= $k ?>"
-                      <?= ($edit_prod['categoria'] ?? 'pan') === $k ? 'selected' : '' ?>>
-                      <?= $v ?>
-                    </option>
-                  <?php endforeach; ?>
-                </select>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="field">
-                <label>Se vende por *</label>
-                <select name="unidad" id="sel-unidad">
-                  <option value="unidad" <?= ($edit_prod['unidad_venta'] ?? 'unidad') === 'unidad' ? 'selected' : '' ?>>
-                    Unidad / Media doc. / Docena
-                  </option>
-                  <option value="kilo" <?= ($edit_prod['unidad_venta'] ?? '') === 'kilo' ? 'selected' : '' ?>>
-                    Kilo (precio por kg)
-                  </option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Cantidad disponible</label>
-                <input type="number" name="stock" min="0"
-                  value="<?= $edit_prod['cantidad_disponible'] ?? 0 ?>"
-                  placeholder="0">
-              </div>
-            </div>
-
-            <div class="field">
-              <label>Descripción</label>
-              <textarea name="desc" rows="2"
-                placeholder="Contale al cliente qué hace especial este producto..."><?= h($edit_prod['descripcion'] ?? '') ?></textarea>
-            </div>
-
-            <div class="form-row">
-              <div class="field">
-                <label>
-                  Precio *
-                  <span id="lbl-precio-hint" style="font-weight:400;color:var(--gris)">(por unidad)</span>
-                </label>
-                <input type="number" name="precio" min="0" step="50"
-                  value="<?= $edit_prod['precio'] ?? '' ?>"
-                  placeholder="0" required>
-                <div id="hint-kilo" class="hint-campo" style="display:none">
-                  💡 Ej: ponés <strong>$2.500</strong> → 1kg = $2.500
-                </div>
-              </div>
-            </div>
-
-            <div class="form-row" id="campos-docena">
-              <div class="field">
-                <label>Precio media docena</label>
-                <input type="number" name="media_doc" min="0" step="50"
-                  value="<?= $edit_prod['precio_media_docena'] ?? '' ?>"
-                  placeholder="Opcional">
-              </div>
-              <div class="field">
-                <label>Precio por docena</label>
-                <input type="number" name="docena" min="0" step="50"
-                  value="<?= $edit_prod['precio_docena'] ?? '' ?>"
-                  placeholder="Opcional">
-              </div>
-            </div>
-
-            <div class="field">
-              <label>Dato extra 💡</label>
-              <input type="text" name="extra"
-                value="<?= h($edit_prod['dato_extra'] ?? '') ?>"
-                placeholder="Sin TACC · Vegano · Horneado a leña · Por encargo...">
-            </div>
-
-            <!-- Imagen principal -->
-            <div class="field">
-              <label>Imagen principal</label>
-              <div style="margin-bottom:10px">
-                <label for="p-img-file" class="btn btn-ghost btn-sm"
-                  style="cursor:pointer;display:inline-flex">
-                  📁 Subir desde galería
-                </label>
-                <input type="file" id="p-img-file" name="imagen"
-                  accept="image/*" style="display:none">
-                <span style="font-size:0.78rem;color:var(--gris);margin-left:10px">
-                  JPG, PNG — máx 5MB
-                </span>
-              </div>
-              <?php if (!empty($edit_prod['imagen_url'])): ?>
-                <img id="img-preview" class="img-preview"
-                  src="<?= h($edit_prod['imagen_url']) ?>"
-                  style="display:block" alt="Preview">
-                <div style="font-size:0.75rem;color:var(--gris);margin-top:4px">
-                  Subí una nueva para reemplazarla
-                </div>
-              <?php else: ?>
-                <img id="img-preview" class="img-preview" alt="Preview">
+          <div class="sec-card" style="max-width:680px">
+            <div class="sec-card-top">
+              <h2><?= $edit_prod ? '✏️ Editar Producto' : '➕ Agregar Producto' ?></h2>
+              <?php if ($edit_prod): ?>
+                <a href="vendedor.php?sec=productos" class="btn btn-ghost btn-sm">Cancelar</a>
               <?php endif; ?>
             </div>
 
-            <!-- Fotos extra -->
-            <div class="field">
-              <label>Fotos adicionales</label>
-              <label for="p-fotos-extra" class="btn btn-ghost btn-sm"
-                style="cursor:pointer;display:inline-flex">
-                📁 Agregar más fotos
-              </label>
-              <input type="file" id="p-fotos-extra" accept="image/*"
-                multiple style="display:none">
-              <span style="font-size:0.78rem;color:var(--gris);margin-left:10px">
-                Hasta 4 fotos
-              </span>
-              <div id="fotos-extra-preview"
-                style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div>
-            </div>
+            <form method="POST" enctype="multipart/form-data">
+              <input type="hidden" name="accion" value="<?= $edit_prod ? 'edit_producto' : 'add_producto' ?>">
+              <?php if ($edit_prod): ?>
+                <input type="hidden" name="pid" value="<?= $edit_prod['id'] ?>">
+              <?php endif; ?>
 
-            <button type="submit" class="btn btn-naranja">
-              <?= $edit_prod ? '💾 Guardar cambios' : '💾 Guardar producto' ?>
-            </button>
-          </form>
-        </div>
+              <div class="form-row">
+                <div class="field">
+                  <label>Nombre *</label>
+                  <input type="text" name="nombre"
+                    value="<?= h($edit_prod['nombre'] ?? '') ?>"
+                    placeholder="Ej: Pan Francés" required>
+                </div>
+                <div class="field">
+                  <label>Categoría *</label>
+                  <select name="cat">
+                    <?php foreach (['pan' => '🍞 Pan', 'facturas' => '🥐 Facturas', 'galletas' => '🍪 Galletas', 'cakes' => '🎂 Cakes', 'otro' => '✨ Otro'] as $k => $v): ?>
+                      <option value="<?= $k ?>"
+                        <?= ($edit_prod['categoria'] ?? 'pan') === $k ? 'selected' : '' ?>>
+                        <?= $v ?>
+                      </option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <div class="field">
+                  <label>Se vende por *</label>
+                  <select name="unidad" id="sel-unidad">
+                    <option value="unidad" <?= ($edit_prod['unidad_venta'] ?? 'unidad') === 'unidad' ? 'selected' : '' ?>>
+                      Unidad / Media doc. / Docena
+                    </option>
+                    <option value="kilo" <?= ($edit_prod['unidad_venta'] ?? '') === 'kilo' ? 'selected' : '' ?>>
+                      Kilo (precio por kg)
+                    </option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Cantidad disponible</label>
+                  <input type="number" name="stock" min="0"
+                    value="<?= $edit_prod['cantidad_disponible'] ?? 0 ?>"
+                    placeholder="0">
+                </div>
+              </div>
+
+              <div class="field">
+                <label>Descripción</label>
+                <textarea name="desc" rows="2"
+                  placeholder="Contale al cliente qué hace especial este producto..."><?= h($edit_prod['descripcion'] ?? '') ?></textarea>
+              </div>
+
+              <div class="form-row">
+                <div class="field">
+                  <label>
+                    Precio *
+                    <span id="lbl-precio-hint" style="font-weight:400;color:var(--gris)">(por unidad)</span>
+                  </label>
+                  <input type="number" name="precio" min="0" step="50"
+                    value="<?= $edit_prod['precio'] ?? '' ?>"
+                    placeholder="0" required>
+                  <div id="hint-kilo" class="hint-campo" style="display:none">
+                    💡 Ej: ponés <strong>$2.500</strong> → 1kg = $2.500
+                  </div>
+                </div>
+              </div>
+
+              <div class="form-row" id="campos-docena">
+                <div class="field">
+                  <label>Precio media docena</label>
+                  <input type="number" name="media_doc" min="0" step="50"
+                    value="<?= $edit_prod['precio_media_docena'] ?? '' ?>"
+                    placeholder="Opcional">
+                </div>
+                <div class="field">
+                  <label>Precio por docena</label>
+                  <input type="number" name="docena" min="0" step="50"
+                    value="<?= $edit_prod['precio_docena'] ?? '' ?>"
+                    placeholder="Opcional">
+                </div>
+              </div>
+
+              <div class="field">
+                <label>Dato extra 💡</label>
+                <input type="text" name="extra"
+                  value="<?= h($edit_prod['dato_extra'] ?? '') ?>"
+                  placeholder="Sin TACC · Vegano · Horneado a leña · Por encargo...">
+              </div>
+
+              <!-- Imagen principal -->
+              <div class="field">
+                <label>Imagen principal</label>
+                <div style="margin-bottom:10px">
+                  <label for="p-img-file" class="btn btn-ghost btn-sm"
+                    style="cursor:pointer;display:inline-flex">
+                    📁 Subir desde galería
+                  </label>
+                  <input type="file" id="p-img-file" name="imagen"
+                    accept="image/*" style="display:none">
+                  <span style="font-size:0.78rem;color:var(--gris);margin-left:10px">
+                    JPG, PNG — máx 5MB
+                  </span>
+                </div>
+                <?php if (!empty($edit_prod['imagen_url'])): ?>
+                  <img id="img-preview" class="img-preview"
+                    src="<?= h($edit_prod['imagen_url']) ?>"
+                    style="display:block" alt="Preview">
+                  <div style="font-size:0.75rem;color:var(--gris);margin-top:4px">
+                    Subí una nueva para reemplazarla
+                  </div>
+                <?php else: ?>
+                  <img id="img-preview" class="img-preview" alt="Preview">
+                <?php endif; ?>
+              </div>
+
+              <!-- Fotos extra -->
+              <div class="field">
+                <label>Fotos adicionales</label>
+                <label for="p-fotos-extra" class="btn btn-ghost btn-sm"
+                  style="cursor:pointer;display:inline-flex">
+                  📁 Agregar más fotos
+                </label>
+                <input type="file" id="p-fotos-extra" accept="image/*"
+                  multiple style="display:none">
+                <span style="font-size:0.78rem;color:var(--gris);margin-left:10px">
+                  Hasta 4 fotos
+                </span>
+                <div id="fotos-extra-preview"
+                  style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div>
+              </div>
+
+              <button type="submit" class="btn btn-naranja">
+                <?= $edit_prod ? '💾 Guardar cambios' : '💾 Guardar producto' ?>
+              </button>
+            </form>
+          </div>
+
+        <?php endif; // cierra else de sec=add (bloqueo Hija) 
+        ?>
 
       <?php /* ══════════════════ PEDIDOS ══════════════════ */ elseif ($seccion === 'pedidos'): ?>
 
@@ -879,8 +1064,6 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
             No hay pedidos que coincidan.
           </div>
         </div>
-
-        <?php endif; // fin if tipo_suc === 'padre' para sec=add ?>
 
       <?php /* ══════════════════ TRABAJADORES ══════════════════ */ elseif ($seccion === 'trabajadores'): ?>
 
@@ -1088,64 +1271,75 @@ if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
           </div>
         <?php endif; ?>
 
-        <div class="sec-card">
+        <?php if ($tipo_suc === 'padre' && !empty($mis_hijas)): ?>
+        <!-- Asignar productos a Hija -->
+        <div class="sec-card" style="margin-top:20px">
           <div class="sec-card-top">
-            <h2>🏬 Mis Sucursales</h2>
-            <button class="btn btn-naranja btn-sm" onclick="document.getElementById('modal-crear-suc').style.display='flex'">
-              + Nueva sucursal
-            </button>
+            <h2>📦 Asignar producto a una Hija</h2>
           </div>
-
-          <?php if (empty($mis_sucursales)): ?>
-            <p style="color:var(--gris);text-align:center;padding:32px 0">No hay sucursales aún. Creá la primera.</p>
-          <?php else: ?>
-            <div style="display:grid;gap:12px">
-              <?php foreach ($mis_sucursales as $s): ?>
-                <div style="padding:16px;background:var(--crema);border-radius:var(--radio);display:flex;align-items:center;gap:14px">
-                  <span style="font-size:1.8rem">🏬</span>
-                  <div style="flex:1">
-                    <p style="font-weight:700;margin:0 0 2px"><?= h($s['nombre']) ?></p>
-                    <p style="color:var(--gris);font-size:0.82rem;margin:0">
-                      <?= !empty($s['direccion']) ? '📍 ' . h($s['direccion']) : 'Sin dirección' ?>
-                      <?= !empty($s['telefono'])  ? ' · 📞 ' . h($s['telefono']) : '' ?>
-                    </p>
-                  </div>
-                  <form method="POST" onsubmit="return confirm('¿Eliminar esta sucursal?')">
-                    <input type="hidden" name="accion" value="eliminar_sucursal">
-                    <input type="hidden" name="suc_id" value="<?= $s['id'] ?>">
-                    <button class="btn btn-sm" style="background:#FFEBEE;color:#C62828;border:none;font-weight:700">🗑️</button>
-                  </form>
-                </div>
-              <?php endforeach; ?>
+          <form method="POST" style="display:grid;gap:14px;max-width:500px">
+            <input type="hidden" name="accion" value="asignar_herencia">
+            <div class="field">
+              <label>Sucursal Hija</label>
+              <select name="sucursal_id" required>
+                <option value="">— Seleccioná una hija —</option>
+                <?php foreach ($mis_hijas as $h): ?>
+                  <option value="<?= $h['id'] ?>"><?= h($h['nombre_panaderia'] ?: $h['nombre']) ?></option>
+                <?php endforeach; ?>
+              </select>
             </div>
-          <?php endif; ?>
+            <div class="field">
+              <label>Producto</label>
+              <select name="producto_id" required>
+                <option value="">— Seleccioná un producto —</option>
+                <?php foreach ($productos as $p): if (!$p['activo']) continue; ?>
+                  <option value="<?= $p['id'] ?>" data-precio="<?= $p['precio'] ?>">
+                    <?= h($p['nombre']) ?> — <?= precio((float)$p['precio']) ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <div class="field">
+              <label>Precio mínimo que puede cobrar la Hija</label>
+              <input type="number" name="precio_minimo" min="1" step="0.01" required
+                     placeholder="Ej: 500">
+              <small style="color:var(--gris);font-size:0.78rem">Debe ser ≤ al precio del producto</small>
+            </div>
+            <button type="submit" class="btn btn-naranja">Asignar producto →</button>
+          </form>
         </div>
 
-        <!-- Modal: Crear sucursal -->
-        <div id="modal-crear-suc" class="modal-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
-          <div class="modal-box" onclick="event.stopPropagation()">
-            <h3>🏬 Nueva Sucursal</h3>
-            <form method="POST">
-              <input type="hidden" name="accion" value="crear_sucursal">
-              <div style="margin-bottom:12px">
-                <label style="display:block;font-weight:700;font-size:0.85rem;margin-bottom:4px">Nombre de la sucursal *</label>
-                <input type="text" name="nombre" required placeholder="Sucursal Centro">
+        <!-- Asignaciones realizadas -->
+        <?php if (!empty($herencias_padre)): ?>
+        <div class="sec-card" style="margin-top:20px">
+          <div class="sec-card-top">
+            <h2>📋 Asignaciones realizadas</h2>
+          </div>
+          <div style="display:grid;gap:10px">
+            <?php foreach ($herencias_padre as $hp): ?>
+              <div style="padding:14px 18px;background:var(--crema);border-radius:var(--radio);
+                          display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+                <div style="flex:1;min-width:180px">
+                  <p style="font-weight:700;margin:0 0 2px"><?= h($hp['prod_nombre']) ?></p>
+                  <p style="color:var(--gris);font-size:0.82rem;margin:0">
+                    → <?= h($hp['hija_nombre']) ?> · Mín: <?= precio((float)$hp['precio_minimo']) ?>
+                  </p>
+                </div>
+                <?php if ($hp['aceptado']): ?>
+                  <span style="background:#E8F5E9;color:#2E7D32;padding:4px 12px;border-radius:50px;
+                               font-size:0.78rem;font-weight:700">
+                    ✅ Aceptado — <?= precio((float)$hp['precio_sucursal']) ?>
+                  </span>
+                <?php else: ?>
+                  <span style="background:#FFF8E1;color:#E65100;padding:4px 12px;border-radius:50px;
+                               font-size:0.78rem;font-weight:700">⏳ Pendiente</span>
+                <?php endif; ?>
               </div>
-              <div style="margin-bottom:12px">
-                <label style="display:block;font-weight:700;font-size:0.85rem;margin-bottom:4px">Dirección</label>
-                <input type="text" name="direccion" placeholder="Av. San Martín 123">
-              </div>
-              <div style="margin-bottom:16px">
-                <label style="display:block;font-weight:700;font-size:0.85rem;margin-bottom:4px">Teléfono</label>
-                <input type="text" name="telefono" placeholder="3834-000000">
-              </div>
-              <div style="display:flex;gap:10px">
-                <button class="btn btn-naranja" type="submit">✅ Crear sucursal</button>
-                <button class="btn btn-ghost" type="button" onclick="document.getElementById('modal-crear-suc').style.display='none'">Cancelar</button>
-              </div>
-            </form>
+            <?php endforeach; ?>
           </div>
         </div>
+        <?php endif; ?>
+        <?php endif; ?>
 
       <?php /* ══════════════════ PERFIL ══════════════════ */ elseif ($seccion === 'perfil'): ?>
 
