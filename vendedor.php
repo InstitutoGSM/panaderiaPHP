@@ -587,23 +587,32 @@ if ($tipo_suc === 'padre') {
 $metricas_hijas = [];
 if ($tipo_suc === 'padre' && !empty($mis_hijas)) {
   foreach ($mis_hijas as $h) {
-    $hid = $h['id'];
+    // Los pedidos usan usuarios.id.
+    $hija_usuario_id = (int)$h['id'];
+
+    // Las herencias usan sucursales.id.
+    $hija_sucursal_id = (int)$h['sucursal_id'];
 
     $her_q = db()->prepare("
-      SELECT COUNT(*) AS total_asignados,
-             COALESCE(SUM(aceptado), 0) AS total_aceptados
-      FROM herencia_productos WHERE padre_id = ? AND sucursal_id = ?
+      SELECT
+        COUNT(*) AS total_asignados,
+        COALESCE(SUM(aceptado), 0) AS total_aceptados
+      FROM herencia_productos
+      WHERE padre_id = ?
+        AND sucursal_id = ?
     ");
-    $her_q->execute([$uid, $hid]);
+    $her_q->execute([$uid, $hija_sucursal_id]);
     $her_s = $her_q->fetch();
 
     $ped_q = db()->prepare("
-      SELECT COUNT(*) AS total_pedidos,
-             COALESCE(SUM(CASE WHEN estado='pendiente'  THEN 1 ELSE 0 END), 0) AS pendientes,
-             COALESCE(SUM(CASE WHEN estado='entregado'  THEN total ELSE 0 END), 0) AS ingresos
-      FROM pedidos WHERE vendedor_id = ?
+      SELECT
+        COUNT(*) AS total_pedidos,
+        COALESCE(SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END), 0) AS pendientes,
+        COALESCE(SUM(CASE WHEN estado = 'entregado' THEN total ELSE 0 END), 0) AS ingresos
+      FROM pedidos
+      WHERE vendedor_id = ?
     ");
-    $ped_q->execute([$hid]);
+    $ped_q->execute([$hija_usuario_id]);
     $ped_s = $ped_q->fetch();
 
     $metricas_hijas[] = array_merge($h, $her_s, $ped_s);
@@ -611,15 +620,30 @@ if ($tipo_suc === 'padre' && !empty($mis_hijas)) {
 }
 if ($tipo_suc === 'padre') {
   $herp_stmt = db()->prepare("
-    SELECT h.id, h.precio_minimo, h.precio_sucursal, h.aceptado,
-           p.nombre AS prod_nombre, p.precio AS precio_original, p.imagen_url, p.categoria,
-           u.nombre_panaderia AS hija_nombre, u.id AS hija_uid
+    SELECT
+      h.id,
+      h.precio_minimo,
+      h.precio_sucursal,
+      h.aceptado,
+      p.nombre AS prod_nombre,
+      p.precio AS precio_original,
+      p.imagen_url,
+      p.categoria,
+      COALESCE(s.nombre, u.nombre_panaderia, u.nombre) AS hija_nombre,
+      u.id AS hija_uid,
+      s.id AS hija_sucursal_id
     FROM herencia_productos h
-    JOIN productos p ON p.id = h.producto_id
-    JOIN usuarios  u ON u.id = h.sucursal_id
+    INNER JOIN productos p
+      ON p.id = h.producto_id
+    INNER JOIN sucursales s
+      ON s.id = h.sucursal_id
+     AND s.activo = 1
+    INNER JOIN usuarios u
+      ON u.id = s.vendedor_id
     WHERE h.padre_id = ?
-    ORDER BY u.nombre_panaderia, p.nombre
+    ORDER BY hija_nombre, p.nombre
   ");
+
   $herp_stmt->execute([$uid]);
   $herencias_padre = $herp_stmt->fetchAll();
 }
