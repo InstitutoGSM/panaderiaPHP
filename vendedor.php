@@ -550,39 +550,6 @@ if ($tipo_suc === 'hija' && $mi_sucursal_id) {
   $herencias_hija = $her_stmt->fetchAll();
 }
 
-// ── Asignaciones hechas por el Padre ─────────────────────────────────────
-$herencias_padre = [];
-
-if ($tipo_suc === 'padre') {
-  $herp_stmt = db()->prepare("
-    SELECT
-      h.id,
-      h.precio_minimo,
-      h.precio_sucursal,
-      h.aceptado,
-      p.nombre AS prod_nombre,
-      p.precio AS precio_original,
-      p.imagen_url,
-      p.categoria,
-      COALESCE(s.nombre, u.nombre_panaderia, u.nombre) AS hija_nombre,
-      u.id AS hija_uid,
-      s.id AS hija_sucursal_id
-    FROM herencia_productos h
-    INNER JOIN productos p
-      ON p.id = h.producto_id
-    INNER JOIN sucursales s
-      ON s.id = h.sucursal_id
-     AND s.activo = 1
-    INNER JOIN usuarios u
-      ON u.id = s.vendedor_id
-    WHERE h.padre_id = ?
-    ORDER BY hija_nombre, p.nombre
-  ");
-
-  $herp_stmt->execute([$uid]);
-  $herencias_padre = $herp_stmt->fetchAll();
-}
-
 // ── Métricas por Hija (para Padre) ───────────────────────────────────────
 $metricas_hijas = [];
 if ($tipo_suc === 'padre' && !empty($mis_hijas)) {
