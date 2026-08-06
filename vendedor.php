@@ -1502,6 +1502,7 @@ if ($tipo_suc === 'padre') {
       </div>
 
       <form method="POST" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
         <input type="hidden" name="accion" value="<?= $edit_prod ? 'edit_producto' : 'add_producto' ?>">
         <?php if ($edit_prod): ?>
           <input type="hidden" name="pid" value="<?= $edit_prod['id'] ?>">
@@ -2212,6 +2213,7 @@ if ($tipo_suc === 'padre') {
       '¿Asignar todos los productos activos a esta sucursal Hija?'
     )">
 
+    <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
     <input
       type="hidden"
       name="accion"
