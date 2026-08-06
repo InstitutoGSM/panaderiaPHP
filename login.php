@@ -5,9 +5,10 @@ require_once __DIR__ . '/includes/functions.php';
 // Si ya esta logueado, lo mandamos a donde corresponde
 if (esta_logueado()) {
     $tipo = $_SESSION['user_tipo'] ?? 'comprador';
-    if ($tipo === 'vendedor') header('Location: ' . SITE_URL . '/vendedor.php');
-    elseif ($tipo === 'admin') header('Location: ' . SITE_URL . '/admin.php');
-    else header('Location: ' . SITE_URL . '/index.php');
+    if ($tipo === 'vendedor')      header('Location: ' . SITE_URL . '/vendedor.php');
+    elseif ($tipo === 'admin')     header('Location: ' . SITE_URL . '/admin.php');
+    elseif ($tipo === 'trabajador') header('Location: ' . SITE_URL . '/trabajador.php');
+    else                           header('Location: ' . SITE_URL . '/index.php');
     exit;
 }
 
@@ -40,9 +41,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion'] ?? '') === 'login
                 exit;
             }
 
-            if ($u['tipo'] === 'vendedor')     header('Location: ' . SITE_URL . '/vendedor.php');
-            elseif ($u['tipo'] === 'admin')    header('Location: ' . SITE_URL . '/admin.php');
-            else                               header('Location: ' . SITE_URL . '/index.php');
+            if ($u['tipo'] === 'vendedor')       header('Location: ' . SITE_URL . '/vendedor.php');
+            elseif ($u['tipo'] === 'admin')      header('Location: ' . SITE_URL . '/admin.php');
+            elseif ($u['tipo'] === 'trabajador') header('Location: ' . SITE_URL . '/trabajador.php');
+            else                                 header('Location: ' . SITE_URL . '/index.php');
             exit;
         } else {
             $error = 'Email o contraseña incorrectos.';

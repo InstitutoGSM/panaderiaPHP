@@ -92,9 +92,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
         exit;
       }
-      $valor = (int)($_POST['valor'] ?? 0);
-      db()->prepare("UPDATE usuarios SET puede_ser_admin=? WHERE id=?")->execute([$valor, $uid]);
-      echo json_encode(['ok' => true, 'msg' => $valor ? 'Habilitado como Admin de Panadería ✅' : 'Removido como Admin de Panadería ❌']);
+
+      $valor = (int)($_POST['valor'] ?? 0) === 1 ? 1 : 0;
+
+      $actualizar_admin = db()->prepare("
+    UPDATE usuarios
+    SET is_admin_pan = ?,
+        puede_ser_admin = ?
+    WHERE id = ?
+      AND tipo = 'vendedor'
+  ");
+
+      $actualizar_admin->execute([$valor, $valor, $uid]);
+
+      if ($actualizar_admin->rowCount() < 1) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'Vendedor no encontrado.'
+        ]);
+        exit;
+      }
+
+      echo json_encode([
+        'ok' => true,
+        'msg' => $valor
+          ? 'Encargado habilitado correctamente ✅'
+          : 'Permiso de Encargado quitado ❌'
+      ]);
+
       break;
 
     // ── Editar datos de USUARIO (comprador/vendedor) ───────────
@@ -128,30 +153,138 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       break;
 
     case 'set_tipo_sucursal':
-      
-      // Admin Global designa a un vendedor como Sucursal Padre o Hija
+
+      // El usuario que recibe el rol debe ser un vendedor.
       if (!$uid) {
         echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
         exit;
       }
+
       $tipo_suc = $_POST['tipo_sucursal'] ?? '';
       $padre_id = (int)($_POST['padre_id'] ?? 0);
-      if (!in_array($tipo_suc, ['padre', 'hija', ''])) {
-        echo json_encode(['ok' => false, 'msg' => 'Tipo inválido']);
+
+      if (!in_array($tipo_suc, ['padre', 'hija', ''], true)) {
+        echo json_encode(['ok' => false, 'msg' => 'Tipo de sucursal inválido']);
         exit;
       }
-      if ($tipo_suc === 'hija' && !$padre_id) {
-        echo json_encode(['ok' => false, 'msg' => 'Debés seleccionar una sucursal padre']);
+
+      $vendedor_q = db()->prepare("
+    SELECT id, is_admin_pan
+    FROM usuarios
+    WHERE id = ?
+      AND tipo = 'vendedor'
+    LIMIT 1
+  ");
+      $vendedor_q->execute([$uid]);
+      $vendedor = $vendedor_q->fetch();
+
+      if (!$vendedor) {
+        echo json_encode(['ok' => false, 'msg' => 'El usuario no es un vendedor válido']);
         exit;
       }
-      if ($tipo_suc === 'hija' && $padre_id === $uid) {
-        echo json_encode(['ok' => false, 'msg' => 'Una sucursal no puede ser hija de sí misma']);
+
+      // Para ser Padre o Hija debe estar habilitado como Encargado.
+      if ($tipo_suc !== '' && (int)$vendedor['is_admin_pan'] !== 1) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'Primero habilitá a este vendedor como Encargado'
+        ]);
         exit;
       }
-      $padre_real = ($tipo_suc === 'hija') ? $padre_id : null;
-      db()->prepare("UPDATE usuarios SET tipo_sucursal=?, sucursal_padre_id=? WHERE id=? AND tipo='vendedor'")
-        ->execute([$tipo_suc ?: null, $padre_real, $uid]);
-      echo json_encode(['ok' => true, 'msg' => 'Tipo de sucursal actualizado ✅']);
+
+      // Un Encargado Padre o Hija debe tener una sucursal activa.
+      if ($tipo_suc !== '') {
+        $sucursal_q = db()->prepare("
+      SELECT id
+      FROM sucursales
+      WHERE vendedor_id = ?
+        AND activo = 1
+      LIMIT 1
+    ");
+        $sucursal_q->execute([$uid]);
+
+        if (!$sucursal_q->fetchColumn()) {
+          echo json_encode([
+            'ok' => false,
+            'msg' => 'Este vendedor todavía no tiene una sucursal activa'
+          ]);
+          exit;
+        }
+      }
+
+      if ($tipo_suc === 'hija') {
+        if (!$padre_id) {
+          echo json_encode([
+            'ok' => false,
+            'msg' => 'Debés seleccionar una sucursal Padre'
+          ]);
+          exit;
+        }
+
+        if ($padre_id === $uid) {
+          echo json_encode([
+            'ok' => false,
+            'msg' => 'Una sucursal no puede ser Hija de sí misma'
+          ]);
+          exit;
+        }
+
+        $padre_q = db()->prepare("
+      SELECT id
+      FROM usuarios
+      WHERE id = ?
+        AND tipo = 'vendedor'
+        AND is_admin_pan = 1
+        AND tipo_sucursal = 'padre'
+      LIMIT 1
+    ");
+        $padre_q->execute([$padre_id]);
+
+        if (!$padre_q->fetch()) {
+          echo json_encode([
+            'ok' => false,
+            'msg' => 'El usuario elegido no es un Encargado Padre válido'
+          ]);
+          exit;
+        }
+
+        $padre_sucursal_q = db()->prepare("
+      SELECT id
+      FROM sucursales
+      WHERE vendedor_id = ?
+        AND activo = 1
+      LIMIT 1
+    ");
+        $padre_sucursal_q->execute([$padre_id]);
+
+        if (!$padre_sucursal_q->fetchColumn()) {
+          echo json_encode([
+            'ok' => false,
+            'msg' => 'El Encargado Padre no tiene una sucursal activa'
+          ]);
+          exit;
+        }
+      }
+
+      $padre_real = $tipo_suc === 'hija' ? $padre_id : null;
+
+      db()->prepare("
+    UPDATE usuarios
+    SET tipo_sucursal = ?,
+        sucursal_padre_id = ?
+    WHERE id = ?
+      AND tipo = 'vendedor'
+  ")->execute([
+        $tipo_suc !== '' ? $tipo_suc : null,
+        $padre_real,
+        $uid
+      ]);
+
+      echo json_encode([
+        'ok' => true,
+        'msg' => 'Rol de sucursal actualizado correctamente ✅'
+      ]);
+
       break;
 
     default:
@@ -165,7 +298,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Vendedores (panaderias)
 $vendedores = db()->query("
     SELECT id, nombre, nombre_panaderia, email, email_contacto,
-           avatar_url, estado_verificacion, puede_ser_admin, doc_notas_rechazo,
+           avatar_url, estado_verificacion, puede_ser_admin, is_admin_pan, doc_notas_rechazo,
            doc_bromatologia, doc_carnet_manipulador, doc_habilitacion_comercial,
            tipo_sucursal, sucursal_padre_id, created_at
     FROM usuarios WHERE tipo='vendedor'
@@ -541,7 +674,7 @@ foreach ($vendedores as $v) {
                 <p><?= h($v['email']) ?> · <span style="color:<?= $est_color ?>;font-weight:700"><?= $est_label ?></span>
                   · <?= count($sucursales) ?> sucursal(es)</p>
               </div>
-              <?php if ($v['puede_ser_admin']): ?>
+              <?php if ($v['is_admin_pan']): ?>
                 <span style="background:#E8F5E9;color:#2E7D32;font-size:0.75rem;font-weight:700;padding:3px 10px;border-radius:50px">Admin ✓</span>
               <?php endif; ?>
               <span style="color:var(--gris);font-size:1.2rem">▾</span>
@@ -583,7 +716,7 @@ foreach ($vendedores as $v) {
               <div class="toggle-wrap" style="margin-top:14px">
                 <label class="toggle-switch">
                   <input type="checkbox"
-                    <?= $v['puede_ser_admin'] ? 'checked' : '' ?>
+                    <?= $v['is_admin_pan'] ? 'checked' : '' ?>
                     onchange="toggleAdmin(<?= $v['id'] ?>, this.checked)">
                   <span class="toggle-slider"></span>
                 </label>
@@ -619,7 +752,11 @@ foreach ($vendedores as $v) {
                            display:<?= $tipo_actual === 'hija' ? 'block' : 'none' ?>">
                     <option value="">— Seleccionar Padre —</option>
                     <?php foreach ($vendedores as $vp): ?>
-                      <?php if ($vp['id'] !== $v['id'] && ($vp['tipo_sucursal'] === 'padre' || !$vp['tipo_sucursal'])): ?>
+                      <?php if (
+                        $vp['id'] !== $v['id'] &&
+                        $vp['tipo_sucursal'] === 'padre' &&
+                        (int)$vp['is_admin_pan'] === 1
+                      ): ?>
                         <option value="<?= $vp['id'] ?>"
                           <?= (int)$v['sucursal_padre_id'] === $vp['id'] ? 'selected' : '' ?>>
                           <?= h($vp['nombre_panaderia'] ?: $vp['nombre']) ?>

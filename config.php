@@ -64,7 +64,26 @@ function requerir_login(string $redir = 'login.php'): void {
 
 function requerir_vendedor(): void {
     requerir_login();
-    if (!es_vendedor()) { header('Location: ' . SITE_URL . '/index.php'); exit; }
+
+    if (!es_vendedor()) {
+        header('Location: ' . SITE_URL . '/index.php');
+        exit;
+    }
+}
+
+function requerir_encargado(): void {
+    requerir_login();
+
+    $u = usuario_actual();
+
+    if (
+        !$u ||
+        ($u['tipo'] ?? '') !== 'vendedor' ||
+        (int)($u['is_admin_pan'] ?? 0) !== 1
+    ) {
+        header('Location: ' . SITE_URL . '/index.php');
+        exit;
+    }
 }
 
 function requerir_admin(): void {
