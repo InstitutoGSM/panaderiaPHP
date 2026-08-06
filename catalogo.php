@@ -69,7 +69,16 @@ $panaderias = db()->query("
 // ── Sucursales por panaderia ──────────────────────────────────────────────
 $suc_por_pan = [];
 try {
-  $suc_all = db()->query("SELECT * FROM sucursales ORDER BY vendedor_id, nombre")->fetchAll();
+  $suc_all = db()->query("
+    SELECT s.*
+    FROM sucursales s
+    INNER JOIN usuarios u ON u.id = s.vendedor_id
+    WHERE s.activo = 1
+      AND s.estado = 'activa'
+      AND u.tipo = 'vendedor'
+      AND u.estado_verificacion = 'aprobado'
+    ORDER BY s.vendedor_id, s.nombre
+")->fetchAll();
   foreach ($suc_all as $s) $suc_por_pan[$s['vendedor_id']][] = $s;
 } catch (Exception $e) {
 }
@@ -77,7 +86,13 @@ try {
 // ── Panaderia activa (para el banner) ────────────────────────────────────
 $pan_activa = null;
 if ($vendedor > 0) {
-  $pa = db()->prepare("SELECT * FROM usuarios WHERE id = ? AND tipo = 'vendedor'");
+  $pa = db()->prepare("
+    SELECT *
+    FROM usuarios
+    WHERE id = ?
+      AND tipo = 'vendedor'
+      AND estado_verificacion = 'aprobado'
+");
   $pa->execute([$vendedor]);
   $pan_activa = $pa->fetch() ?: null;
 }

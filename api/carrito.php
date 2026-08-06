@@ -23,16 +23,25 @@ if ($acc === 'add') {
     $pid      = (int)($_POST['producto_id'] ?? 0);
     $cantidad = max(1, (int)($_POST['cantidad'] ?? 1));
 
-    if (!$pid) { echo json_encode(['ok'=>false,'msg'=>'Producto inválido']); exit; }
+    if (!$pid) {
+        echo json_encode(['ok' => false, 'msg' => 'Producto inválido']);
+        exit;
+    }
 
     // Cargar datos del producto
     $q = db()->prepare("SELECT p.*, u.nombre AS nombre_vendedor, u.nombre_panaderia
                          FROM productos p JOIN usuarios u ON u.id = p.vendedor_id
-                         WHERE p.id=? AND p.activo=1");
+                         WHERE p.id = ?
+  AND p.activo = 1
+  AND u.tipo = 'vendedor'
+  AND u.estado_verificacion = 'aprobado'");
     $q->execute([$pid]);
     $prod = $q->fetch();
 
-    if (!$prod) { echo json_encode(['ok'=>false,'msg'=>'Producto no disponible']); exit; }
+    if (!$prod) {
+        echo json_encode(['ok' => false, 'msg' => 'Producto no disponible']);
+        exit;
+    }
 
     // Si el carrito ya tiene productos de otro vendedor, rechazar
     $carrito = $_SESSION['carrito'] ?? [];
@@ -93,7 +102,10 @@ if ($acc === 'set') {
         $carrito = array_values(array_filter($carrito, fn($i) => $i['producto_id'] !== $pid));
     } else {
         foreach ($carrito as &$item) {
-            if ($item['producto_id'] === $pid) { $item['cantidad'] = $cantidad; break; }
+            if ($item['producto_id'] === $pid) {
+                $item['cantidad'] = $cantidad;
+                break;
+            }
         }
         unset($item);
     }

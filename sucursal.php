@@ -7,7 +7,16 @@ $id = (int)($_GET['id'] ?? 0);
 if (!$id) { header('Location: ' . SITE_URL . '/catalogo.php'); exit; }
 
 // ── Datos de la sucursal ──────────────────────────────────────────────────
-$stmt = db()->prepare("SELECT * FROM sucursales WHERE id = ?");
+$stmt = db()->prepare("
+    SELECT s.*
+    FROM sucursales s
+    INNER JOIN usuarios u ON u.id = s.vendedor_id
+    WHERE s.id = ?
+      AND s.activo = 1
+      AND s.estado = 'activa'
+      AND u.tipo = 'vendedor'
+      AND u.estado_verificacion = 'aprobado'
+");
 $stmt->execute([$id]);
 $suc = $stmt->fetch();
 if (!$suc) { header('Location: ' . SITE_URL . '/catalogo.php'); exit; }

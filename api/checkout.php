@@ -3,9 +3,10 @@ require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/functions.php';
 header('Content-Type: application/json');
 
-function resp(bool $ok, string $msg = '', array $extra = []): void {
-    echo json_encode(array_merge(['ok' => $ok, 'msg' => $msg], $extra));
-    exit;
+function resp(bool $ok, string $msg = '', array $extra = []): void
+{
+  echo json_encode(array_merge(['ok' => $ok, 'msg' => $msg], $extra));
+  exit;
 }
 
 // Solo logueados
@@ -30,65 +31,73 @@ if (empty($grupos))      resp(false, 'El carrito está vacío.');
 $pdo = db();
 
 try {
-    $pdo->beginTransaction();
+  $pdo->beginTransaction();
 
-    $pedidos_creados = [];
+  $pedidos_creados = [];
 
-    foreach ($grupos as $grupo) {
-        $vid       = (int)($grupo['vendedor_id'] ?? 0);
-        $medio     = $grupo['medio_pago'] ?? 'efectivo';
-        $items_grp = $grupo['items']      ?? [];
+  foreach ($grupos as $grupo) {
+    $vid       = (int)($grupo['vendedor_id'] ?? 0);
+    $medio     = $grupo['medio_pago'] ?? 'efectivo';
+    $items_grp = $grupo['items']      ?? [];
 
-        if (!$vid || empty($items_grp)) continue;
+    if (!$vid || empty($items_grp)) continue;
 
-        // Validar medios permitidos
-        if (!in_array($medio, ['efectivo','transferencia','debito','credito'])) {
-            $medio = 'efectivo';
-        }
+    // Validar medios permitidos
+    if (!in_array($medio, ['efectivo', 'transferencia', 'debito', 'credito'])) {
+      $medio = 'efectivo';
+    }
 
-        // ── Validar y descontar stock ──────────────────────────────────────
-        foreach ($items_grp as $it) {
-            $pid      = (int)($it['producto_id'] ?? 0);
-            $cantidad = (int)($it['cantidad']    ?? 0);
-            if ($pid <= 0 || $cantidad <= 0) continue;
+    // ── Validar y descontar stock ──────────────────────────────────────
+    foreach ($items_grp as $it) {
+      $pid      = (int)($it['producto_id'] ?? 0);
+      $cantidad = (int)($it['cantidad']    ?? 0);
+      if ($pid <= 0 || $cantidad <= 0) continue;
 
-            // Lock de la fila para evitar race conditions
-            $row = $pdo->prepare("
-                SELECT cantidad_disponible FROM productos
-                WHERE id = ? AND vendedor_id = ? AND activo = 1
-                FOR UPDATE
-            ");
-            $row->execute([$pid, $vid]);
-            $prod = $row->fetch();
+      // Lock de la fila para evitar race conditions
+      $row = $pdo->prepare("
+    SELECT p.cantidad_disponible
+    FROM productos p
+    INNER JOIN usuarios u ON u.id = p.vendedor_id
+    WHERE p.id = ?
+      AND p.vendedor_id = ?
+      AND p.activo = 1
+      AND u.tipo = 'vendedor'
+      AND u.estado_verificacion = 'aprobado'
+    FOR UPDATE
+");
+      $row->execute([$pid, $vid]);
+      $prod = $row->fetch();
 
-            if (!$prod) {
-                $pdo->rollBack();
-                resp(false, "Producto no encontrado o inactivo (id: $pid).");
-            }
+      if (!$prod) {
+        $pdo->rollBack();
+        resp(false, "Producto no encontrado o inactivo (id: $pid).");
+      }
 
-            if ($prod['cantidad_disponible'] !== null
-                && $prod['cantidad_disponible'] < $cantidad) {
-                $pdo->rollBack();
-                resp(false, "Stock insuficiente para \"{$it['nombre']}\". Disponible: {$prod['cantidad_disponible']}.");
-            }
+      if (
+        $prod['cantidad_disponible'] !== null
+        && $prod['cantidad_disponible'] < $cantidad
+      ) {
+        $pdo->rollBack();
+        resp(false, "Stock insuficiente para \"{$it['nombre']}\". Disponible: {$prod['cantidad_disponible']}.");
+      }
 
-            // Descontar stock
-            $pdo->prepare("
+      // Descontar stock
+      $pdo->prepare("
                 UPDATE productos
                 SET cantidad_disponible = cantidad_disponible - ?
                 WHERE id = ? AND vendedor_id = ?
             ")->execute([$cantidad, $pid, $vid]);
-        }
+    }
 
-        // ── Calcular total del grupo ────────────────────────────────────────
-        $total = array_sum(array_map(fn($i) => $i['precio'] * $i['cantidad'], $items_grp));
+    // ── Calcular total del grupo ────────────────────────────────────────
+    $total = array_sum(array_map(fn($i) => $i['precio'] * $i['cantidad'], $items_grp));
 
-        // ── Generar ticket_id único ─────────────────────────────────────────
-        $ticket_id = 'TK-' . strtoupper(substr(md5(uniqid('', true)), 0, 5))
-                           . '-' . strtoupper(substr(md5(uniqid('', true)), 0, 4));
+    // ── Generar ticket_id único ─────────────────────────────────────────
+    $ticket_id = 'TK-' . strtoupper(substr(md5(uniqid('', true)), 0, 5))
+      . '-' . strtoupper(substr(md5(uniqid('', true)), 0, 4));
 
-        // ── Insertar pedido ─────────────────────────────────────────────────
-        $ins = $pdo->prepare("
+    // ── Insertar pedido ─────────────────────────────────────────────────
+    $ins = $pdo->prepare("
             INSERT INTO pedidos
               (ticket_id, comprador_id, vendedor_id, total, estado,
                medio_pago, nombre_comprador, email_comprador,
@@ -96,67 +105,76 @@ try {
                tarjeta_ultimos4, tarjeta_tipo, created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, NOW())
         ");
-        $ins->execute([
-            $ticket_id, $uid, $vid, $total, 'pendiente',
-            $medio, $nombre, $email,
-            $cp, $direccion, $notas,
-            $ultimos4, $tipo_tarj,
-        ]);
-        $pedido_id = (int)$pdo->lastInsertId();
+    $ins->execute([
+      $ticket_id,
+      $uid,
+      $vid,
+      $total,
+      'pendiente',
+      $medio,
+      $nombre,
+      $email,
+      $cp,
+      $direccion,
+      $notas,
+      $ultimos4,
+      $tipo_tarj,
+    ]);
+    $pedido_id = (int)$pdo->lastInsertId();
 
-        // ── Insertar items ──────────────────────────────────────────────────
-        $ins_item = $pdo->prepare("
+    // ── Insertar items ──────────────────────────────────────────────────
+    $ins_item = $pdo->prepare("
             INSERT INTO pedido_items
               (pedido_id, producto_id, nombre, cantidad, precio, variante)
             VALUES (?,?,?,?,?,?)
         ");
-        foreach ($items_grp as $it) {
-            $ins_item->execute([
-                $pedido_id,
-                (int)($it['producto_id'] ?? 0),
-                $it['nombre']   ?? '',
-                (int)$it['cantidad'],
-                (float)$it['precio'],
-                $it['variante'] ?? 'unidad',
-            ]);
-        }
-
-        $pedidos_creados[] = [
-            'pedido_id'  => $pedido_id,
-            'ticket_id'  => $ticket_id,
-            'total'      => $total,
-            'medio_pago' => $medio,
-            'items'      => $items_grp,
-        ];
+    foreach ($items_grp as $it) {
+      $ins_item->execute([
+        $pedido_id,
+        (int)($it['producto_id'] ?? 0),
+        $it['nombre']   ?? '',
+        (int)$it['cantidad'],
+        (float)$it['precio'],
+        $it['variante'] ?? 'unidad',
+      ]);
     }
 
-    $pdo->commit();
+    $pedidos_creados[] = [
+      'pedido_id'  => $pedido_id,
+      'ticket_id'  => $ticket_id,
+      'total'      => $total,
+      'medio_pago' => $medio,
+      'items'      => $items_grp,
+    ];
+  }
 
-    // ── Generar HTML del ticket (primer pedido) ─────────────────────────────
-    $primer = $pedidos_creados[0] ?? null;
-    $ticket_html = $primer ? generarTicketHTML($primer, $nombre, $email) : null;
+  $pdo->commit();
 
-    resp(true, '¡Pedido confirmado!', [
-        'pedidos'     => $pedidos_creados,
-        'ticket_html' => $ticket_html,
-    ]);
+  // ── Generar HTML del ticket (primer pedido) ─────────────────────────────
+  $primer = $pedidos_creados[0] ?? null;
+  $ticket_html = $primer ? generarTicketHTML($primer, $nombre, $email) : null;
 
+  resp(true, '¡Pedido confirmado!', [
+    'pedidos'     => $pedidos_creados,
+    'ticket_html' => $ticket_html,
+  ]);
 } catch (PDOException $e) {
-    $pdo->rollBack();
-    resp(false, 'Error interno al procesar el pedido. Intentá de nuevo.');
+  $pdo->rollBack();
+  resp(false, 'Error interno al procesar el pedido. Intentá de nuevo.');
 }
 
 /* ══ GENERAR TICKET HTML ════════════════════════════════════════════════════ */
-function generarTicketHTML(array $pedido, string $nombre, string $email): string {
-    $ticket_id = $pedido['ticket_id'];
-    $fecha     = date('d/m/Y H:i');
-    $total     = number_format($pedido['total'], 0, ',', '.');
+function generarTicketHTML(array $pedido, string $nombre, string $email): string
+{
+  $ticket_id = $pedido['ticket_id'];
+  $fecha     = date('d/m/Y H:i');
+  $total     = number_format($pedido['total'], 0, ',', '.');
 
-    $filas = '';
-    foreach ($pedido['items'] as $i) {
-        $subtotal = number_format($i['precio'] * $i['cantidad'], 0, ',', '.');
-        $precio   = number_format($i['precio'], 0, ',', '.');
-        $filas .= "
+  $filas = '';
+  foreach ($pedido['items'] as $i) {
+    $subtotal = number_format($i['precio'] * $i['cantidad'], 0, ',', '.');
+    $precio   = number_format($i['precio'], 0, ',', '.');
+    $filas .= "
         <tr>
           <td>" . htmlspecialchars($i['nombre']) . "</td>
           <td style='text-align:center'>" . htmlspecialchars($i['variante'] ?? 'unidad') . "</td>
@@ -164,17 +182,17 @@ function generarTicketHTML(array $pedido, string $nombre, string $email): string
           <td style='text-align:right'>\${$precio}</td>
           <td style='text-align:right'>\${$subtotal}</td>
         </tr>";
-    }
+  }
 
-    $medio_label = match($pedido['medio_pago']) {
-        'efectivo'      => '💵 Efectivo',
-        'transferencia' => '📲 Transferencia',
-        'debito'        => '💳 Débito',
-        'credito'       => '💳 Crédito',
-        default         => $pedido['medio_pago'],
-    };
+  $medio_label = match ($pedido['medio_pago']) {
+    'efectivo'      => '💵 Efectivo',
+    'transferencia' => '📲 Transferencia',
+    'debito'        => '💳 Débito',
+    'credito'       => '💳 Crédito',
+    default         => $pedido['medio_pago'],
+  };
 
-    return <<<HTML
+  return <<<HTML
 <!DOCTYPE html>
 <html lang="es">
 <head>

@@ -39,6 +39,281 @@ $msg_err = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $accion = $_POST['accion'] ?? '';
 
+  /* ── Crear invitación para sucursal Hija ───────────────────────────── */
+  if ($accion === 'crear_invitacion_sucursal') {
+    $seccion = 'hijas';
+
+    if ($tipo_suc !== 'padre') {
+      $msg_err = 'Solo el Encargado Padre puede crear sucursales Hija.';
+    } else {
+      $nombre_sucursal = trim($_POST['nombre_sucursal'] ?? '');
+      $direccion        = trim($_POST['direccion'] ?? '');
+      $telefono         = trim($_POST['telefono'] ?? '');
+      $nombre_invitado  = trim($_POST['nombre_invitado'] ?? '');
+      $email_invitado   = strtolower(trim($_POST['email_invitado'] ?? ''));
+
+      if (!$nombre_sucursal || !$nombre_invitado || !$email_invitado) {
+        $msg_err = 'Nombre de sucursal, nombre del invitado y email son obligatorios.';
+      } elseif (mb_strlen($nombre_sucursal) > 255) {
+        $msg_err = 'El nombre de la sucursal no puede superar los 255 caracteres.';
+      } elseif (mb_strlen($nombre_invitado) > 120) {
+        $msg_err = 'El nombre del invitado no puede superar los 120 caracteres.';
+      } elseif (mb_strlen($direccion) > 500) {
+        $msg_err = 'La dirección no puede superar los 500 caracteres.';
+      } elseif (mb_strlen($telefono) > 50) {
+        $msg_err = 'El teléfono no puede superar los 50 caracteres.';
+      } elseif (!filter_var($email_invitado, FILTER_VALIDATE_EMAIL)) {
+        $msg_err = 'El email del invitado no es válido.';
+      } else {
+        $pdo = db();
+
+        try {
+          $pdo->beginTransaction();
+
+          /*
+           * Confirmar nuevamente el rol del Padre desde la base de datos.
+           * No confiamos únicamente en el valor cargado al inicio de la página.
+           */
+          $padre_q = $pdo->prepare("
+            SELECT id
+            FROM usuarios
+            WHERE id = ?
+              AND tipo = 'vendedor'
+              AND is_admin_pan = 1
+              AND tipo_sucursal = 'padre'
+            LIMIT 1
+            FOR UPDATE
+          ");
+          $padre_q->execute([$uid]);
+
+          if (!$padre_q->fetchColumn()) {
+            throw new RuntimeException(
+              'La cuenta actual no está habilitada como Encargado Padre.'
+            );
+          }
+
+          /*
+           * Confirmar que el Padre tenga una sucursal activa propia.
+           */
+          $sucursal_padre_q = $pdo->prepare("
+            SELECT id
+            FROM sucursales
+            WHERE vendedor_id = ?
+              AND padre_id IS NULL
+              AND activo = 1
+              AND estado = 'activa'
+            ORDER BY id
+            LIMIT 1
+            FOR UPDATE
+          ");
+          $sucursal_padre_q->execute([$uid]);
+          $sucursal_padre_id = $sucursal_padre_q->fetchColumn();
+
+          if (!$sucursal_padre_id) {
+            throw new RuntimeException(
+              'El Encargado Padre no tiene una sucursal activa propia.'
+            );
+          }
+
+          /*
+           * No permitir dos invitaciones pendientes para el mismo email.
+           */
+          $invitacion_existente_q = $pdo->prepare("
+            SELECT id
+            FROM invitaciones_sucursal
+            WHERE email_invitado = ?
+              AND estado = 'pendiente'
+              AND expires_at > NOW()
+            LIMIT 1
+            FOR UPDATE
+          ");
+          $invitacion_existente_q->execute([$email_invitado]);
+
+          if ($invitacion_existente_q->fetchColumn()) {
+            throw new RuntimeException(
+              'Ya existe una invitación pendiente para ese email.'
+            );
+          }
+
+          /*
+           * Si el email ya existe, el usuario debe ser un vendedor aprobado
+           * y no debe pertenecer ya a otra estructura de sucursales.
+           */
+          $usuario_invitado_id = null;
+
+          $usuario_q = $pdo->prepare("
+            SELECT
+              id,
+              nombre,
+              tipo,
+              estado_verificacion,
+              tipo_sucursal,
+              sucursal_padre_id
+            FROM usuarios
+            WHERE email = ?
+            LIMIT 1
+            FOR UPDATE
+          ");
+          $usuario_q->execute([$email_invitado]);
+          $usuario_existente = $usuario_q->fetch();
+
+          if ($usuario_existente) {
+            $usuario_invitado_id = (int)$usuario_existente['id'];
+
+            if ($usuario_invitado_id === $uid) {
+              throw new RuntimeException(
+                'No podés invitarte a vos mismo como Encargado Hijo.'
+              );
+            }
+
+            if ($usuario_existente['tipo'] !== 'vendedor') {
+              throw new RuntimeException(
+                'El email ya pertenece a una cuenta que no es vendedor.'
+              );
+            }
+
+            if ($usuario_existente['estado_verificacion'] !== 'aprobado') {
+              throw new RuntimeException(
+                'El vendedor existente debe estar aprobado antes de recibir una invitación.'
+              );
+            }
+
+            if (
+              in_array(
+                $usuario_existente['tipo_sucursal'],
+                ['padre', 'hija'],
+                true
+              ) ||
+              !empty($usuario_existente['sucursal_padre_id'])
+            ) {
+              throw new RuntimeException(
+                'El vendedor ya pertenece a otra estructura de sucursales.'
+              );
+            }
+
+            /*
+             * Evitar que un vendedor con otra sucursal activa o pendiente
+             * reciba una relación incompatible.
+             */
+            $otra_sucursal_q = $pdo->prepare("
+              SELECT id
+              FROM sucursales
+              WHERE vendedor_id = ?
+                AND estado IN ('pendiente', 'activa')
+              LIMIT 1
+              FOR UPDATE
+            ");
+            $otra_sucursal_q->execute([$usuario_invitado_id]);
+
+            if ($otra_sucursal_q->fetchColumn()) {
+              throw new RuntimeException(
+                'El vendedor ya tiene una sucursal activa o pendiente.'
+              );
+            }
+          }
+
+          /*
+           * Generar el token únicamente en memoria.
+           * En la base de datos se almacenará solo su hash.
+           */
+          $token      = bin2hex(random_bytes(32));
+          $token_hash = hash('sha256', $token);
+
+          /*
+           * Crear la sucursal pendiente sin vendedor asignado.
+           * La vinculación definitiva se hará al aceptar la invitación.
+           */
+          $crear_sucursal = $pdo->prepare("
+            INSERT INTO sucursales (
+              vendedor_id,
+              padre_id,
+              nombre,
+              direccion,
+              telefono,
+              activo,
+              estado
+            ) VALUES (
+              NULL,
+              ?,
+              ?,
+              ?,
+              ?,
+              0,
+              'pendiente'
+            )
+          ");
+
+          $crear_sucursal->execute([
+            $uid,
+            $nombre_sucursal,
+            $direccion ?: null,
+            $telefono ?: null
+          ]);
+
+          $nueva_sucursal_id = (int)$pdo->lastInsertId();
+
+          /*
+           * Crear la invitación pendiente con una vigencia de 7 días.
+           */
+          $crear_invitacion = $pdo->prepare("
+            INSERT INTO invitaciones_sucursal (
+              padre_id,
+              sucursal_id,
+              usuario_invitado_id,
+              email_invitado,
+              nombre_invitado,
+              token_hash,
+              estado,
+              expires_at
+            ) VALUES (
+              ?,
+              ?,
+              ?,
+              ?,
+              ?,
+              ?,
+              'pendiente',
+              DATE_ADD(NOW(), INTERVAL 7 DAY)
+            )
+          ");
+
+          $crear_invitacion->execute([
+            $uid,
+            $nueva_sucursal_id,
+            $usuario_invitado_id,
+            $email_invitado,
+            $nombre_invitado,
+            $token_hash
+          ]);
+
+          $pdo->commit();
+
+          /*
+           * El token real solo se conserva temporalmente en la sesión
+           * para mostrar el enlace en la interfaz del siguiente subgrupo.
+           */
+          $_SESSION['ultima_invitacion_sucursal'] = [
+            'sucursal_id' => $nueva_sucursal_id,
+            'email'       => $email_invitado,
+            'link'        => SITE_URL . '/aceptar-invitacion.php?token=' . urlencode($token)
+          ];
+
+          $msg_ok = 'Sucursal Hija creada como pendiente. La invitación está lista para enviar.';
+        } catch (Throwable $e) {
+          if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+          }
+
+          $msg_err = $e instanceof RuntimeException
+            ? $e->getMessage()
+            : 'No se pudo crear la sucursal ni la invitación.';
+        }
+      }
+    }
+
+    $accion = '';
+  }
+
   // Las Hijas no pueden crear, editar, activar, desactivar ni eliminar productos.
   $acciones_solo_padre = [
     'add_producto',
@@ -49,9 +324,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   if (
     in_array($accion, $acciones_solo_padre, true) &&
-    $tipo_suc !== 'padre'
+    $tipo_suc === 'hija'
   ) {
-    $msg_err = 'Solo el Encargado Padre puede gestionar productos propios.';
+    $msg_err = 'Las Sucursales Hija no pueden gestionar productos propios.';
     $seccion = 'productos';
     $accion = '';
   }
@@ -512,6 +787,36 @@ if ($tipo_suc === 'padre') {
   $mis_hijas = $hijas_stmt->fetchAll();
 }
 
+// ── Invitaciones pendientes creadas por este Padre ─────────────────────────
+$invitaciones_pendientes = [];
+$ultima_invitacion = $_SESSION['ultima_invitacion_sucursal'] ?? null;
+unset($_SESSION['ultima_invitacion_sucursal']);
+
+if ($tipo_suc === 'padre') {
+  $invitaciones_q = db()->prepare("
+    SELECT
+      i.id,
+      i.sucursal_id,
+      i.email_invitado,
+      i.nombre_invitado,
+      i.expires_at,
+      i.created_at,
+      s.nombre AS sucursal_nombre,
+      s.direccion,
+      s.telefono
+    FROM invitaciones_sucursal i
+    INNER JOIN sucursales s
+      ON s.id = i.sucursal_id
+    WHERE i.padre_id = ?
+      AND i.estado = 'pendiente'
+      AND i.expires_at > NOW()
+    ORDER BY i.created_at DESC
+  ");
+
+  $invitaciones_q->execute([$uid]);
+  $invitaciones_pendientes = $invitaciones_q->fetchAll();
+}
+
 // ── Padre de esta Hija ────────────────────────────────────────────────────
 $mi_padre = null;
 if ($tipo_suc === 'hija' && !empty($u['sucursal_padre_id'])) {
@@ -644,7 +949,7 @@ if ($tipo_suc === 'padre') {
             <span class="nav-ico">🍞</span>
             <?= $tipo_suc === 'hija' ? 'Productos Heredados' : 'Mis Productos' ?>
           </a></li>
-        <?php if ($tipo_suc === 'padre'): ?>
+        <?php if ($tipo_suc !== 'hija'): ?>
           <li><a href="vendedor.php?sec=add" class="<?= $seccion === 'add' ? 'on' : '' ?>"><span class="nav-ico">➕</span> Agregar Producto</a></li>
         <?php endif; ?>
         <li>
@@ -724,7 +1029,7 @@ if ($tipo_suc === 'padre') {
             </p>
           </div>
         </div>
-        <?php if ($tipo_suc === 'padre' && in_array($seccion, ['inicio', 'productos'])): ?>
+        <?php if ($tipo_suc !== 'hija' && in_array($seccion, ['inicio', 'productos'])): ?>
           <a href="vendedor.php?sec=add" class="btn btn-naranja btn-sm">+ Nuevo producto</a>
         <?php endif; ?>
       </div>
@@ -756,10 +1061,10 @@ if ($tipo_suc === 'padre') {
                       border-radius:var(--radio);margin-bottom:24px">
             <h3 style="margin:0 0 6px;color:#E65100">⏳ Rol pendiente de asignación</h3>
             <p style="margin:0;color:#BF360C;font-size:0.92rem">
-              Tu cuenta fue aprobada pero el Administrador todavía no te asignó un rol de sucursal
-              (<strong>Padre</strong> o <strong>Hija</strong>).
-              Mientras tanto podés completar tu perfil y subir tus documentos.
-              Una vez asignado el rol vas a poder gestionar productos y trabajadores.
+              Tu cuenta puede usar el panel aunque todavía esté pendiente de verificación.
+              Podés completar tu perfil, subir tus documentos y cargar productos.
+              Los productos permanecerán ocultos para el público hasta que tu cuenta sea aprobada.
+              Las funciones de sucursales y trabajadores estarán disponibles cuando se asigne el rol correspondiente.
             </p>
             <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
               <a href="vendedor.php?sec=perfil" class="btn btn-naranja btn-sm">Completar perfil →</a>
@@ -1020,7 +1325,7 @@ if ($tipo_suc === 'padre') {
 
 <?php /* ══════════════════ AGREGAR / EDITAR ══════════════════ */ elseif ($seccion === 'add'): ?>
 
-  <?php if ($tipo_suc !== 'padre'): ?>
+  <?php if ($tipo_suc === 'hija'): ?>
     <div style="background:#FFEBEE;border-left:4px solid var(--rojo);padding:20px 24px;border-radius:var(--radio)">
       <h3 style="margin:0 0 6px;color:#C62828">🚫 Acción no permitida</h3>
       <p style="margin:0;color:#B71C1C;font-size:0.92rem">
@@ -1438,111 +1743,339 @@ if ($tipo_suc === 'padre') {
 <?php /* ══════════════════ MIS HIJAS ══════════════════ */ elseif ($seccion === 'hijas'): ?>
 
   <?php if ($tipo_suc !== 'padre'): ?>
-    <div style="background:#FFEBEE;border-left:4px solid var(--rojo);padding:20px 24px;border-radius:var(--radio)">
-      <p style="margin:0;color:#C62828;font-weight:700">🚫 Solo el Encargado Padre puede ver esta sección.</p>
+
+    <div style="background:#FFEBEE;border-left:4px solid var(--rojo);
+                padding:20px 24px;border-radius:var(--radio)">
+      <p style="margin:0;color:#C62828;font-weight:700">
+        Solo el Encargado Padre puede administrar sucursales Hija.
+      </p>
     </div>
+
   <?php else: ?>
+
+    <?php if ($msg_ok): ?>
+      <div style="background:#E8F5E9;border-left:4px solid var(--verde);
+                  padding:12px 16px;border-radius:var(--radio);
+                  margin-bottom:20px;color:#2E7D32;font-weight:600">
+        <?= h($msg_ok) ?>
+      </div>
+    <?php endif; ?>
+
+    <?php if ($msg_err): ?>
+      <div style="background:#FFEBEE;border-left:4px solid var(--rojo);
+                  padding:12px 16px;border-radius:var(--radio);
+                  margin-bottom:20px;color:#C62828;font-weight:600">
+        <?= h($msg_err) ?>
+      </div>
+    <?php endif; ?>
+
+    <?php if ($ultima_invitacion): ?>
+      <div style="background:#FFF8E1;border-left:4px solid #F9A825;
+                  padding:16px 18px;border-radius:var(--radio);
+                  margin-bottom:20px">
+
+        <p style="margin:0 0 8px;color:#7A4F00;font-weight:700">
+          Invitación creada correctamente
+        </p>
+
+        <p style="margin:0 0 10px;color:#6D4C41;font-size:0.88rem">
+          Copiá este enlace y enviáselo al futuro Encargado Hijo.
+          El enlace será válido durante 7 días.
+        </p>
+
+        <input
+          type="text"
+          value="<?= h($ultima_invitacion['link']) ?>"
+          readonly
+          onclick="this.select()"
+          style="width:100%;box-sizing:border-box;padding:10px;
+                 border:1px solid #D6B656;border-radius:8px;
+                 background:#FFFDF2;font-size:0.82rem">
+
+        <p style="margin:8px 0 0;color:#8D6E63;font-size:0.76rem">
+          Seleccioná el enlace, copialo y guardalo. Por seguridad, el token
+          real no se almacena visible en la base de datos.
+        </p>
+      </div>
+    <?php endif; ?>
+
+    <!-- Crear nueva sucursal Hija -->
     <div class="sec-card">
       <div class="sec-card-top">
-        <h2>🏬 Mis Sucursales Hija (<?= count($mis_hijas) ?>)</h2>
+        <h2>Crear sucursal Hija</h2>
       </div>
-      <?php if (empty($mis_hijas)): ?>
-        <p style="color:var(--gris);text-align:center;padding:32px 0">
-          Todavía no tenés sucursales Hija vinculadas.<br>
-          <small>El Administrador Global debe asignarles el rol "Hija" y vincularte como Padre.</small>
+
+      <p style="color:var(--gris);font-size:0.88rem;margin:0 0 18px">
+        La sucursal quedará pendiente hasta que el futuro Encargado Hijo
+        acepte la invitación.
+      </p>
+
+      <form method="POST" style="display:grid;gap:14px;max-width:620px">
+        <input type="hidden" name="accion" value="crear_invitacion_sucursal">
+
+        <div class="field">
+          <label for="nombre_sucursal">Nombre de la sucursal</label>
+          <input
+            type="text"
+            id="nombre_sucursal"
+            name="nombre_sucursal"
+            maxlength="255"
+            placeholder="Ej: Panadería Puma Centro"
+            required>
+        </div>
+
+        <div class="field">
+          <label for="direccion">Dirección</label>
+          <input
+            type="text"
+            id="direccion"
+            name="direccion"
+            maxlength="500"
+            placeholder="Ej: Av. Principal 123">
+        </div>
+
+        <div class="field">
+          <label for="telefono">Teléfono</label>
+          <input
+            type="text"
+            id="telefono"
+            name="telefono"
+            maxlength="50"
+            placeholder="Ej: 383 400-0000">
+        </div>
+
+        <div class="field">
+          <label for="nombre_invitado">Nombre del futuro Encargado Hijo</label>
+          <input
+            type="text"
+            id="nombre_invitado"
+            name="nombre_invitado"
+            maxlength="120"
+            placeholder="Nombre completo"
+            required>
+        </div>
+
+        <div class="field">
+          <label for="email_invitado">Email del futuro Encargado Hijo</label>
+          <input
+            type="email"
+            id="email_invitado"
+            name="email_invitado"
+            maxlength="180"
+            placeholder="encargado@ejemplo.com"
+            required>
+        </div>
+
+        <button type="submit" class="btn btn-naranja">
+          Crear sucursal e invitación
+        </button>
+      </form>
+    </div>
+
+    <!-- Invitaciones pendientes -->
+    <div class="sec-card" style="margin-top:20px">
+      <div class="sec-card-top">
+        <h2>Invitaciones pendientes</h2>
+      </div>
+
+      <?php if (empty($invitaciones_pendientes)): ?>
+
+        <p style="color:var(--gris);text-align:center;padding:24px 0;margin:0">
+          No hay invitaciones pendientes.
         </p>
+
       <?php else: ?>
+
         <div style="display:grid;gap:12px">
-          <?php foreach ($mis_hijas as $h): ?>
-            <div style="padding:16px 20px;background:var(--crema);border-radius:var(--radio);
-                              display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-              <?= avatar_html($h, '42px', '0.9rem') ?>
-              <div style="flex:1;min-width:160px">
-                <p style="font-weight:700;margin:0 0 2px"><?= h($h['nombre_panaderia'] ?: $h['nombre']) ?></p>
-                <p style="color:var(--gris);font-size:0.82rem;margin:0"><?= h($h['email']) ?></p>
+          <?php foreach ($invitaciones_pendientes as $invitacion): ?>
+            <div style="padding:16px 20px;background:var(--crema);
+                        border-radius:var(--radio);
+                        display:flex;align-items:center;
+                        gap:14px;flex-wrap:wrap">
+
+              <div style="flex:1;min-width:220px">
+                <p style="font-weight:700;margin:0 0 4px">
+                  <?= h($invitacion['sucursal_nombre']) ?>
+                </p>
+
+                <p style="color:var(--gris);font-size:0.82rem;margin:0">
+                  <?= h($invitacion['nombre_invitado'] ?: 'Sin nombre') ?>
+                  · <?= h($invitacion['email_invitado']) ?>
+                </p>
+
+                <p style="color:var(--gris);font-size:0.76rem;margin:5px 0 0">
+                  Vence:
+                  <?= date('d/m/Y H:i', strtotime($invitacion['expires_at'])) ?>
+                </p>
               </div>
-              <span style="padding:4px 12px;border-radius:50px;font-size:0.78rem;font-weight:700;
-                      background:<?= $h['estado_verificacion'] === 'aprobado' ? '#E8F5E9' : '#FFF8E1' ?>;
-                      color:<?= $h['estado_verificacion'] === 'aprobado' ? '#2E7D32' : '#E65100' ?>">
-                <?= $h['estado_verificacion'] === 'aprobado' ? '✅ Activa' : '⏳ ' . h($h['estado_verificacion']) ?>
+
+              <span style="background:#FFF8E1;color:#E65100;
+                           padding:4px 12px;border-radius:50px;
+                           font-size:0.78rem;font-weight:700">
+                Pendiente
               </span>
             </div>
           <?php endforeach; ?>
         </div>
+
       <?php endif; ?>
     </div>
-  <?php endif; ?>
 
-  <?php if ($tipo_suc === 'padre' && !empty($mis_hijas)): ?>
-    <!-- Asignar productos a Hija -->
+    <!-- Sucursales Hija activas -->
     <div class="sec-card" style="margin-top:20px">
       <div class="sec-card-top">
-        <h2>📦 Asignar producto a una Hija</h2>
+        <h2>Sucursales Hija activas (<?= count($mis_hijas) ?>)</h2>
       </div>
-      <form method="POST" style="display:grid;gap:14px;max-width:500px">
-        <input type="hidden" name="accion" value="asignar_herencia">
-        <div class="field">
-          <label>Sucursal Hija</label>
-          <select name="sucursal_id" required>
-            <option value="">— Seleccioná una hija —</option>
-            <?php foreach ($mis_hijas as $h): ?>
-              <option value="<?= $h['sucursal_id'] ?>">
-                <?= h($h['sucursal_nombre'] ?: ($h['nombre_panaderia'] ?: $h['nombre'])) ?>
-              </option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-        <div class="field">
-          <label>Producto</label>
-          <select name="producto_id" required>
-            <option value="">— Seleccioná un producto —</option>
-            <?php foreach ($productos as $p): if (!$p['activo']) continue; ?>
-              <option value="<?= $p['id'] ?>" data-precio="<?= $p['precio'] ?>">
-                <?= h($p['nombre']) ?> — <?= precio((float)$p['precio']) ?>
-              </option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-        <div class="field">
-          <label>Precio mínimo que puede cobrar la Hija</label>
-          <input type="number" name="precio_minimo" min="1" step="0.01" required
-            placeholder="Ej: 500">
-          <small style="color:var(--gris);font-size:0.78rem">Debe ser ≤ al precio del producto</small>
-        </div>
-        <button type="submit" class="btn btn-naranja">Asignar producto →</button>
-      </form>
-    </div>
 
-    <!-- Asignaciones realizadas -->
-    <?php if (!empty($herencias_padre)): ?>
-      <div class="sec-card" style="margin-top:20px">
-        <div class="sec-card-top">
-          <h2>📋 Asignaciones realizadas</h2>
-        </div>
-        <div style="display:grid;gap:10px">
-          <?php foreach ($herencias_padre as $hp): ?>
-            <div style="padding:14px 18px;background:var(--crema);border-radius:var(--radio);
-                          display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-              <div style="flex:1;min-width:180px">
-                <p style="font-weight:700;margin:0 0 2px"><?= h($hp['prod_nombre']) ?></p>
+      <?php if (empty($mis_hijas)): ?>
+
+        <p style="color:var(--gris);text-align:center;padding:24px 0;margin:0">
+          Todavía no tenés sucursales Hija activas.
+        </p>
+
+      <?php else: ?>
+
+        <div style="display:grid;gap:12px">
+          <?php foreach ($mis_hijas as $h): ?>
+            <div style="padding:16px 20px;background:var(--crema);
+                        border-radius:var(--radio);
+                        display:flex;align-items:center;
+                        gap:14px;flex-wrap:wrap">
+
+              <?= avatar_html($h, '42px', '0.9rem') ?>
+
+              <div style="flex:1;min-width:160px">
+                <p style="font-weight:700;margin:0 0 2px">
+                  <?= h($h['nombre_panaderia'] ?: $h['nombre']) ?>
+                </p>
+
                 <p style="color:var(--gris);font-size:0.82rem;margin:0">
-                  → <?= h($hp['hija_nombre']) ?> · Mín: <?= precio((float)$hp['precio_minimo']) ?>
+                  <?= h($h['email']) ?>
+                </p>
+
+                <p style="color:var(--gris);font-size:0.78rem;margin:5px 0 0">
+                  Sucursal: <?= h($h['sucursal_nombre']) ?>
                 </p>
               </div>
-              <?php if ($hp['aceptado']): ?>
-                <span style="background:#E8F5E9;color:#2E7D32;padding:4px 12px;border-radius:50px;
-                               font-size:0.78rem;font-weight:700">
-                  ✅ Aceptado — <?= precio((float)$hp['precio_sucursal']) ?>
-                </span>
-              <?php else: ?>
-                <span style="background:#FFF8E1;color:#E65100;padding:4px 12px;border-radius:50px;
-                               font-size:0.78rem;font-weight:700">⏳ Pendiente</span>
-              <?php endif; ?>
+
+              <span style="padding:4px 12px;border-radius:50px;
+                           font-size:0.78rem;font-weight:700;
+                           background:#E8F5E9;color:#2E7D32">
+                Activa
+              </span>
             </div>
           <?php endforeach; ?>
         </div>
+
+      <?php endif; ?>
+    </div>
+
+    <?php if (!empty($mis_hijas)): ?>
+
+      <!-- Asignar productos a Hija -->
+      <div class="sec-card" style="margin-top:20px">
+        <div class="sec-card-top">
+          <h2>Asignar producto a una Hija</h2>
+        </div>
+
+        <form method="POST" style="display:grid;gap:14px;max-width:500px">
+          <input type="hidden" name="accion" value="asignar_herencia">
+
+          <div class="field">
+            <label>Sucursal Hija</label>
+            <select name="sucursal_id" required>
+              <option value="">— Seleccioná una hija —</option>
+
+              <?php foreach ($mis_hijas as $h): ?>
+                <option value="<?= $h['sucursal_id'] ?>">
+                  <?= h($h['sucursal_nombre'] ?: ($h['nombre_panaderia'] ?: $h['nombre'])) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Producto</label>
+            <select name="producto_id" required>
+              <option value="">— Seleccioná un producto —</option>
+
+              <?php foreach ($productos as $p): ?>
+                <?php if (!$p['activo']) continue; ?>
+
+                <option value="<?= $p['id'] ?>" data-precio="<?= $p['precio'] ?>">
+                  <?= h($p['nombre']) ?> — <?= precio((float)$p['precio']) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Precio mínimo que puede cobrar la Hija</label>
+            <input
+              type="number"
+              name="precio_minimo"
+              min="1"
+              step="0.01"
+              required
+              placeholder="Ej: 500">
+
+            <small style="color:var(--gris);font-size:0.78rem">
+              Debe ser menor o igual al precio del producto.
+            </small>
+          </div>
+
+          <button type="submit" class="btn btn-naranja">
+            Asignar producto
+          </button>
+        </form>
       </div>
+
+      <!-- Asignaciones realizadas -->
+      <?php if (!empty($herencias_padre)): ?>
+        <div class="sec-card" style="margin-top:20px">
+          <div class="sec-card-top">
+            <h2>Asignaciones realizadas</h2>
+          </div>
+
+          <div style="display:grid;gap:10px">
+            <?php foreach ($herencias_padre as $hp): ?>
+              <div style="padding:14px 18px;background:var(--crema);
+                          border-radius:var(--radio);
+                          display:flex;align-items:center;
+                          gap:14px;flex-wrap:wrap">
+
+                <div style="flex:1;min-width:180px">
+                  <p style="font-weight:700;margin:0 0 2px">
+                    <?= h($hp['prod_nombre']) ?>
+                  </p>
+
+                  <p style="color:var(--gris);font-size:0.82rem;margin:0">
+                    → <?= h($hp['hija_nombre']) ?>
+                    · Mín: <?= precio((float)$hp['precio_minimo']) ?>
+                  </p>
+                </div>
+
+                <?php if ($hp['aceptado']): ?>
+                  <span style="background:#E8F5E9;color:#2E7D32;
+                               padding:4px 12px;border-radius:50px;
+                               font-size:0.78rem;font-weight:700">
+                    Aceptado — <?= precio((float)$hp['precio_sucursal']) ?>
+                  </span>
+                <?php else: ?>
+                  <span style="background:#FFF8E1;color:#E65100;
+                               padding:4px 12px;border-radius:50px;
+                               font-size:0.78rem;font-weight:700">
+                    Pendiente
+                  </span>
+                <?php endif; ?>
+              </div>
+            <?php endforeach; ?>
+          </div>
+        </div>
+      <?php endif; ?>
+
     <?php endif; ?>
+
   <?php endif; ?>
 
 <?php /* ══════════════════ MÉTRICAS ══════════════════ */ elseif ($seccion === 'metricas'): ?>

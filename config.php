@@ -76,10 +76,11 @@ function requerir_encargado(): void {
 
     $u = usuario_actual();
 
+    // Todo vendedor puede entrar a su panel,
+    // aunque todavía no haya sido aprobado por el administrador.
     if (
         !$u ||
-        ($u['tipo'] ?? '') !== 'vendedor' ||
-        (int)($u['is_admin_pan'] ?? 0) !== 1
+        ($u['tipo'] ?? '') !== 'vendedor'
     ) {
         header('Location: ' . SITE_URL . '/index.php');
         exit;
