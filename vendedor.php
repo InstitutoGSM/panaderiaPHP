@@ -582,6 +582,163 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $seccion = 'hijas';
   }
 
+  /* ── Asignar todos los productos activos a una Hija ─────────────────── */
+if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
+  $sucursal_id = (int)($_POST['sucursal_id'] ?? 0);
+
+  if (!$sucursal_id) {
+    $msg_err = 'Seleccioná una sucursal Hija.';
+  } else {
+    $pdo = db();
+
+    try {
+      $pdo->beginTransaction();
+
+      /*
+       * Confirmar nuevamente que el usuario actual es Padre.
+       */
+      $padre_q = $pdo->prepare("
+        SELECT id
+        FROM usuarios
+        WHERE id = ?
+          AND tipo = 'vendedor'
+          AND is_admin_pan = 1
+          AND tipo_sucursal = 'padre'
+        LIMIT 1
+        FOR UPDATE
+      ");
+
+      $padre_q->execute([$uid]);
+
+      if (!$padre_q->fetchColumn()) {
+        throw new RuntimeException(
+          'La cuenta actual no está habilitada como Encargado Padre.'
+        );
+      }
+
+      /*
+       * Confirmar que la sucursal Hija pertenece a este Padre.
+       */
+      $hija_q = $pdo->prepare("
+        SELECT s.id
+        FROM sucursales s
+        INNER JOIN usuarios hija
+          ON hija.id = s.vendedor_id
+        WHERE s.id = ?
+          AND s.activo = 1
+          AND s.estado = 'activa'
+          AND hija.tipo = 'vendedor'
+          AND hija.is_admin_pan = 1
+          AND hija.tipo_sucursal = 'hija'
+          AND hija.sucursal_padre_id = ?
+        LIMIT 1
+        FOR UPDATE
+      ");
+
+      $hija_q->execute([
+        $sucursal_id,
+        $uid
+      ]);
+
+      if (!$hija_q->fetchColumn()) {
+        throw new RuntimeException(
+          'La sucursal Hija seleccionada no pertenece a este Padre.'
+        );
+      }
+
+      /*
+       * Obtener sólo los productos activos del Padre.
+       */
+      $productos_q = $pdo->prepare("
+        SELECT
+          id,
+          precio
+        FROM productos
+        WHERE vendedor_id = ?
+          AND activo = 1
+        ORDER BY id
+      ");
+
+      $productos_q->execute([$uid]);
+      $productos_activos = $productos_q->fetchAll();
+
+      if (!$productos_activos) {
+        throw new RuntimeException(
+          'El Padre todavía no tiene productos activos para asignar.'
+        );
+      }
+
+      /*
+       * Asignar cada producto a la Hija.
+       *
+       * El precio mínimo queda igual al precio del Padre.
+       *
+       * Si ya estaba aceptado y el precio de la Hija sigue cumpliendo
+       * el nuevo mínimo, conserva su aceptación.
+       *
+       * Si ya no cumple, vuelve a estado pendiente.
+       */
+      $asignar = $pdo->prepare("
+        INSERT INTO herencia_productos (
+          producto_id,
+          padre_id,
+          sucursal_id,
+          precio_minimo,
+          aceptado,
+          precio_sucursal
+        ) VALUES (?, ?, ?, ?, 0, NULL)
+
+        ON DUPLICATE KEY UPDATE
+          padre_id = VALUES(padre_id),
+          precio_minimo = VALUES(precio_minimo),
+
+          aceptado = CASE
+            WHEN aceptado = 1
+              AND precio_sucursal >= VALUES(precio_minimo)
+            THEN 1
+            ELSE 0
+          END,
+
+          precio_sucursal = CASE
+            WHEN aceptado = 1
+              AND precio_sucursal >= VALUES(precio_minimo)
+            THEN precio_sucursal
+            ELSE NULL
+          END
+      ");
+
+      foreach ($productos_activos as $producto) {
+        $asignar->execute([
+          (int)$producto['id'],
+          $uid,
+          $sucursal_id,
+          (float)$producto['precio']
+        ]);
+      }
+
+      $cantidad_asignada = count($productos_activos);
+
+      $pdo->commit();
+
+      $msg_ok =
+        'Se asignaron ' .
+        $cantidad_asignada .
+        ' productos activos a la sucursal Hija. ' .
+        'La Hija deberá aceptarlos antes de venderlos.';
+    } catch (Throwable $e) {
+      if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+      }
+
+      $msg_err = $e instanceof RuntimeException
+        ? $e->getMessage()
+        : 'No se pudieron asignar los productos a la sucursal Hija.';
+    }
+  }
+
+  $seccion = 'hijas';
+}
+
   /* ── Aceptar herencia con precio propio (solo Hija) ──────────────────── */
   if ($accion === 'aceptar_herencia' && $tipo_suc === 'hija') {
     $her_id          = (int)($_POST['herencia_id'] ?? 0);
@@ -2029,6 +2186,63 @@ if ($tipo_suc === 'padre') {
           </button>
         </form>
       </div>
+
+      <!-- Asignar todos los productos activos -->
+<div class="sec-card" style="margin-top:20px">
+  <div class="sec-card-top">
+    <h2>Asignar todos los productos activos</h2>
+  </div>
+
+  <p style="color:var(--gris);font-size:0.88rem;margin:0 0 18px">
+    Envía todos tus productos activos a una sucursal Hija.
+    Cada producto quedará pendiente de aceptación y su precio mínimo
+    será igual al precio actual del Padre.
+  </p>
+
+  <p style="color:var(--gris);font-size:0.82rem;margin:0 0 14px">
+    Productos activos disponibles:
+    <strong><?= (int)$st['activos'] ?></strong>
+  </p>
+
+  <form
+    method="POST"
+    style="display:grid;gap:14px;max-width:500px"
+    onsubmit="return confirm(
+      '¿Asignar todos los productos activos a esta sucursal Hija?'
+    )">
+
+    <input
+      type="hidden"
+      name="accion"
+      value="asignar_todos_herencia">
+
+    <div class="field">
+      <label>Sucursal Hija</label>
+
+      <select name="sucursal_id" required>
+        <option value="">
+          — Seleccioná una hija —
+        </option>
+
+        <?php foreach ($mis_hijas as $h): ?>
+          <option value="<?= $h['sucursal_id'] ?>">
+            <?= h(
+              $h['sucursal_nombre'] ?:
+              ($h['nombre_panaderia'] ?: $h['nombre'])
+            ) ?>
+          </option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+
+    <button
+      type="submit"
+      class="btn btn-naranja">
+
+      Asignar todos los productos
+    </button>
+  </form>
+</div>
 
       <!-- Asignaciones realizadas -->
       <?php if (!empty($herencias_padre)): ?>

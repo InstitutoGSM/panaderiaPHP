@@ -154,9 +154,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     case 'set_tipo_sucursal':
 
-      // El usuario que recibe el rol debe ser un vendedor.
       if (!$uid) {
-        echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'ID inválido'
+        ]);
         exit;
       }
 
@@ -164,126 +166,360 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $padre_id = (int)($_POST['padre_id'] ?? 0);
 
       if (!in_array($tipo_suc, ['padre', 'hija', ''], true)) {
-        echo json_encode(['ok' => false, 'msg' => 'Tipo de sucursal inválido']);
-        exit;
-      }
-
-      $vendedor_q = db()->prepare("
-    SELECT id, is_admin_pan
-    FROM usuarios
-    WHERE id = ?
-      AND tipo = 'vendedor'
-    LIMIT 1
-  ");
-      $vendedor_q->execute([$uid]);
-      $vendedor = $vendedor_q->fetch();
-
-      if (!$vendedor) {
-        echo json_encode(['ok' => false, 'msg' => 'El usuario no es un vendedor válido']);
-        exit;
-      }
-
-      // Para ser Padre o Hija debe estar habilitado como Encargado.
-      if ($tipo_suc !== '' && (int)$vendedor['is_admin_pan'] !== 1) {
         echo json_encode([
           'ok' => false,
-          'msg' => 'Primero habilitá a este vendedor como Encargado'
+          'msg' => 'Tipo de sucursal inválido'
         ]);
         exit;
       }
 
-      // Un Encargado Padre o Hija debe tener una sucursal activa.
-      if ($tipo_suc !== '') {
-        $sucursal_q = db()->prepare("
-      SELECT id
-      FROM sucursales
-      WHERE vendedor_id = ?
-        AND activo = 1
-      LIMIT 1
-    ");
-        $sucursal_q->execute([$uid]);
+      $pdo = db();
 
-        if (!$sucursal_q->fetchColumn()) {
-          echo json_encode([
-            'ok' => false,
-            'msg' => 'Este vendedor todavía no tiene una sucursal activa'
-          ]);
-          exit;
-        }
-      }
+      try {
+        $pdo->beginTransaction();
 
-      if ($tipo_suc === 'hija') {
-        if (!$padre_id) {
-          echo json_encode([
-            'ok' => false,
-            'msg' => 'Debés seleccionar una sucursal Padre'
-          ]);
-          exit;
-        }
-
-        if ($padre_id === $uid) {
-          echo json_encode([
-            'ok' => false,
-            'msg' => 'Una sucursal no puede ser Hija de sí misma'
-          ]);
-          exit;
-        }
-
-        $padre_q = db()->prepare("
-      SELECT id
+        /*
+     * Bloquear al vendedor mientras se modifica.
+     */
+        $vendedor_q = $pdo->prepare("
+      SELECT
+        id,
+        nombre,
+        nombre_panaderia,
+        telefono,
+        tipo,
+        estado_verificacion,
+        is_admin_pan,
+        tipo_sucursal,
+        sucursal_padre_id
       FROM usuarios
       WHERE id = ?
         AND tipo = 'vendedor'
-        AND is_admin_pan = 1
-        AND tipo_sucursal = 'padre'
       LIMIT 1
+      FOR UPDATE
     ");
-        $padre_q->execute([$padre_id]);
 
-        if (!$padre_q->fetch()) {
+        $vendedor_q->execute([$uid]);
+        $vendedor = $vendedor_q->fetch();
+
+        if (!$vendedor) {
+          throw new RuntimeException(
+            'El usuario no es un vendedor válido.'
+          );
+        }
+
+        /*
+     * Sólo vendedores aprobados pueden ser Encargados.
+     */
+        if (
+          $tipo_suc !== '' &&
+          $vendedor['estado_verificacion'] !== 'aprobado'
+        ) {
+          throw new RuntimeException(
+            'El vendedor debe estar aprobado antes de recibir permisos de Encargado.'
+          );
+        }
+
+        /*
+     * Quitar clasificación.
+     */
+        if ($tipo_suc === '') {
+          $quitar_rol = $pdo->prepare("
+        UPDATE usuarios
+        SET tipo_sucursal = NULL,
+            sucursal_padre_id = NULL
+        WHERE id = ?
+          AND tipo = 'vendedor'
+      ");
+
+          $quitar_rol->execute([$uid]);
+
+          $pdo->commit();
+
           echo json_encode([
-            'ok' => false,
-            'msg' => 'El usuario elegido no es un Encargado Padre válido'
+            'ok' => true,
+            'msg' => 'Clasificación de sucursal quitada correctamente.'
           ]);
           exit;
         }
 
-        $padre_sucursal_q = db()->prepare("
-      SELECT id
-      FROM sucursales
-      WHERE vendedor_id = ?
-        AND activo = 1
-      LIMIT 1
-    ");
-        $padre_sucursal_q->execute([$padre_id]);
+        /*
+     * CONVERTIR EN PADRE
+     */
+        if ($tipo_suc === 'padre') {
 
-        if (!$padre_sucursal_q->fetchColumn()) {
+          /*
+       * Si actualmente es Hija, no convertirla automáticamente
+       * para evitar romper la relación existente.
+       */
+          if (
+            $vendedor['tipo_sucursal'] === 'hija' &&
+            !empty($vendedor['sucursal_padre_id'])
+          ) {
+            throw new RuntimeException(
+              'Este vendedor ya pertenece como Hija a otro Encargado Padre.'
+            );
+          }
+
+          /*
+       * Buscar una sucursal propia existente.
+       */
+          $sucursal_q = $pdo->prepare("
+        SELECT
+          id,
+          vendedor_id,
+          padre_id,
+          estado,
+          activo
+        FROM sucursales
+        WHERE vendedor_id = ?
+        ORDER BY id
+        LIMIT 1
+        FOR UPDATE
+      ");
+
+          $sucursal_q->execute([$uid]);
+          $sucursal = $sucursal_q->fetch();
+
+          /*
+       * Si ya tiene una sucursal vinculada a otro Padre,
+       * no reutilizarla automáticamente.
+       */
+          if ($sucursal && $sucursal['padre_id'] !== null) {
+            throw new RuntimeException(
+              'La sucursal actual pertenece a otra estructura Padre-Hija.'
+            );
+          }
+
+          /*
+       * Nombre automático de la sucursal Padre.
+       */
+          $nombre_sucursal = trim(
+            $vendedor['nombre_panaderia'] ?: ''
+          );
+
+          if ($nombre_sucursal === '') {
+            $nombre_sucursal = 'Sucursal Padre de ' . $vendedor['nombre'];
+          }
+
+          /*
+       * Crear la sucursal Padre si todavía no existe.
+       */
+          if (!$sucursal) {
+            $crear_sucursal = $pdo->prepare("
+          INSERT INTO sucursales (
+            vendedor_id,
+            padre_id,
+            nombre,
+            direccion,
+            telefono,
+            activo,
+            estado
+          ) VALUES (
+            ?,
+            NULL,
+            ?,
+            NULL,
+            ?,
+            1,
+            'activa'
+          )
+        ");
+
+            $crear_sucursal->execute([
+              $uid,
+              $nombre_sucursal,
+              $vendedor['telefono'] ?: null
+            ]);
+          } else {
+            /*
+         * Reactivar la sucursal propia existente.
+         */
+            $activar_sucursal = $pdo->prepare("
+          UPDATE sucursales
+          SET padre_id = NULL,
+              activo = 1,
+              estado = 'activa'
+          WHERE id = ?
+            AND vendedor_id = ?
+        ");
+
+            $activar_sucursal->execute([
+              (int)$sucursal['id'],
+              $uid
+            ]);
+          }
+
+          /*
+       * Convertir oficialmente al vendedor en Padre.
+       */
+          $convertir_padre = $pdo->prepare("
+        UPDATE usuarios
+        SET is_admin_pan = 1,
+            puede_ser_admin = 1,
+            tipo_sucursal = 'padre',
+            sucursal_padre_id = NULL,
+            es_sucursal = 0
+        WHERE id = ?
+          AND tipo = 'vendedor'
+      ");
+
+          $convertir_padre->execute([$uid]);
+
+          $pdo->commit();
+
           echo json_encode([
-            'ok' => false,
-            'msg' => 'El Encargado Padre no tiene una sucursal activa'
+            'ok' => true,
+            'msg' => 'Vendedor convertido en Encargado Padre y sucursal creada correctamente.'
           ]);
           exit;
         }
+
+        /*
+     * CONVERTIR EN HIJA
+     */
+        if ($tipo_suc === 'hija') {
+
+          if (!$padre_id) {
+            throw new RuntimeException(
+              'Debés seleccionar un Encargado Padre.'
+            );
+          }
+
+          if ($padre_id === $uid) {
+            throw new RuntimeException(
+              'Una sucursal no puede ser Hija de sí misma.'
+            );
+          }
+
+          /*
+       * Verificar que el Padre exista y esté aprobado.
+       */
+          $padre_q = $pdo->prepare("
+        SELECT
+          id,
+          nombre,
+          nombre_panaderia,
+          tipo,
+          estado_verificacion,
+          is_admin_pan,
+          tipo_sucursal
+        FROM usuarios
+        WHERE id = ?
+          AND tipo = 'vendedor'
+          AND estado_verificacion = 'aprobado'
+          AND is_admin_pan = 1
+          AND tipo_sucursal = 'padre'
+        LIMIT 1
+        FOR UPDATE
+      ");
+
+          $padre_q->execute([$padre_id]);
+          $padre = $padre_q->fetch();
+
+          if (!$padre) {
+            throw new RuntimeException(
+              'El usuario elegido no es un Encargado Padre válido.'
+            );
+          }
+
+          /*
+       * Confirmar que el Padre tenga sucursal activa.
+       */
+          $padre_sucursal_q = $pdo->prepare("
+        SELECT id
+        FROM sucursales
+        WHERE vendedor_id = ?
+          AND padre_id IS NULL
+          AND activo = 1
+          AND estado = 'activa'
+        LIMIT 1
+        FOR UPDATE
+      ");
+
+          $padre_sucursal_q->execute([$padre_id]);
+
+          if (!$padre_sucursal_q->fetchColumn()) {
+            throw new RuntimeException(
+              'El Encargado Padre todavía no tiene una sucursal activa.'
+            );
+          }
+
+          /*
+       * Verificar que la Hija no esté ligada a otro Padre.
+       */
+          if (
+            $vendedor['tipo_sucursal'] === 'hija' &&
+            !empty($vendedor['sucursal_padre_id']) &&
+            (int)$vendedor['sucursal_padre_id'] !== $padre_id
+          ) {
+            throw new RuntimeException(
+              'Este vendedor ya pertenece a otro Encargado Padre.'
+            );
+          }
+
+          /*
+       * Verificar que tenga una sucursal activa.
+       * La creación normal de Hijas se hará mediante invitación.
+       */
+          $sucursal_hija_q = $pdo->prepare("
+        SELECT id
+        FROM sucursales
+        WHERE vendedor_id = ?
+          AND activo = 1
+          AND estado = 'activa'
+        LIMIT 1
+        FOR UPDATE
+      ");
+
+          $sucursal_hija_q->execute([$uid]);
+
+          if (!$sucursal_hija_q->fetchColumn()) {
+            throw new RuntimeException(
+              'Este vendedor todavía no tiene una sucursal Hija activa. Lo recomendable es invitarlo desde el panel del Padre.'
+            );
+          }
+
+          /*
+       * Convertir oficialmente al vendedor en Hija.
+       */
+          $convertir_hija = $pdo->prepare("
+        UPDATE usuarios
+        SET is_admin_pan = 1,
+            puede_ser_admin = 1,
+            tipo_sucursal = 'hija',
+            sucursal_padre_id = ?,
+            es_sucursal = 1
+        WHERE id = ?
+          AND tipo = 'vendedor'
+      ");
+
+          $convertir_hija->execute([
+            $padre_id,
+            $uid
+          ]);
+
+          $pdo->commit();
+
+          echo json_encode([
+            'ok' => true,
+            'msg' => 'Vendedor convertido en Encargado Hijo correctamente.'
+          ]);
+          exit;
+        }
+      } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+          $pdo->rollBack();
+        }
+
+        echo json_encode([
+          'ok' => false,
+          'msg' => $e instanceof RuntimeException
+            ? $e->getMessage()
+            : 'No se pudo actualizar el tipo de sucursal.'
+        ]);
+        exit;
       }
-
-      $padre_real = $tipo_suc === 'hija' ? $padre_id : null;
-
-      db()->prepare("
-    UPDATE usuarios
-    SET tipo_sucursal = ?,
-        sucursal_padre_id = ?
-    WHERE id = ?
-      AND tipo = 'vendedor'
-  ")->execute([
-        $tipo_suc !== '' ? $tipo_suc : null,
-        $padre_real,
-        $uid
-      ]);
-
-      echo json_encode([
-        'ok' => true,
-        'msg' => 'Rol de sucursal actualizado correctamente ✅'
-      ]);
 
       break;
 
