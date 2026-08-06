@@ -9,6 +9,7 @@ if (!esta_logueado() || ($_SESSION['user_tipo'] ?? '') !== 'admin') {
 
 // ── Acciones POST ─────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  csrf_verificar();
   header('Content-Type: application/json');
   $accion = $_POST['accion'] ?? '';
 

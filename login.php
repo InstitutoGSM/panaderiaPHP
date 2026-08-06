@@ -29,6 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion'] ?? '') === 'login
         $u = $stmt->fetch();
 
         if ($u && password_verify($pass, $u['password_hash'])) {
+            session_regenerate_id(true); // previene session fixation
             $_SESSION['user_id']     = $u['id'];
             $_SESSION['user_tipo']   = $u['tipo'];
             $_SESSION['user_nombre'] = $u['nombre'];
@@ -86,6 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion'] ?? '') === 'regis
             $stmt->execute([$nombre, $email, $hash, $tipo, $panaderia ?: null, $estado]);
             $newId = db()->lastInsertId();
 
+            session_regenerate_id(true);
             $_SESSION['user_id']     = $newId;
             $_SESSION['user_tipo']   = $tipo;
             $_SESSION['user_nombre'] = $nombre;

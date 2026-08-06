@@ -4,7 +4,7 @@ require_once __DIR__ . '/../includes/functions.php';
 
 header('Content-Type: application/json');
 
-if (!isset($_SESSION['usuario'])) {
+if (!esta_logueado()) {
     echo json_encode(['ok' => false, 'msg' => 'Debes iniciar sesión']);
     exit;
 }

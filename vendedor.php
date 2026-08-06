@@ -37,6 +37,7 @@ $msg_err = '';
    POST HANDLERS
 ══════════════════════════════════════════════════════════════════════════ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  csrf_verificar();
   $accion = $_POST['accion'] ?? '';
 
   /* ── Crear invitación para sucursal Hija ───────────────────────────── */

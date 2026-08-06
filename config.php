@@ -76,12 +76,20 @@ function requerir_encargado(): void {
 
     $u = usuario_actual();
 
-    // Todo vendedor puede entrar a su panel,
-    // aunque todavía no haya sido aprobado por el administrador.
-    if (
-        !$u ||
-        ($u['tipo'] ?? '') !== 'vendedor'
-    ) {
+    // Solo vendedores pueden acceder al panel de encargado.
+    // Compradores, trabajadores y admins son redirigidos.
+    if (!$u || $u['tipo'] !== 'vendedor') {
+        header('Location: ' . SITE_URL . '/index.php');
+        exit;
+    }
+}
+
+function requerir_trabajador(): void {
+    requerir_login();
+
+    $u = usuario_actual();
+
+    if (!$u || $u['tipo'] !== 'trabajador') {
         header('Location: ' . SITE_URL . '/index.php');
         exit;
     }
@@ -90,4 +98,20 @@ function requerir_encargado(): void {
 function requerir_admin(): void {
     requerir_login('admin-login.php');
     if (!es_admin()) { header('Location: ' . SITE_URL . '/index.php'); exit; }
+}
+
+// ── CSRF ──────────────────────────────────────────────────────────────────
+function csrf_token(): string {
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
+}
+
+function csrf_verificar(): void {
+    $token = $_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '';
+    if (!hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
+        http_response_code(403);
+        die('Acción no permitida (CSRF).');
+    }
 }
