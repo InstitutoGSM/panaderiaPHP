@@ -1362,7 +1362,7 @@ if ($tipo_suc === 'padre') {
                       <?php if (!$h['aceptado']): ?>
                         <!-- Formulario para aceptar -->
                         <form method="POST" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
-                          <input type="hidden" name="accion" value="aceptar_herencia">
+                          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="aceptar_herencia">
                           <input type="hidden" name="herencia_id" value="<?= $h['id'] ?>">
                           <input type="number" name="precio_sucursal"
                             min="<?= $h['precio_minimo'] ?>" step="0.01" required
@@ -1375,7 +1375,7 @@ if ($tipo_suc === 'padre') {
                         <!-- Ya aceptado: opción de revocar -->
                         <form method="POST" onsubmit="return confirm('¿Dejar de vender este producto?')"
                           style="margin-top:8px">
-                          <input type="hidden" name="accion" value="revocar_herencia">
+                          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="revocar_herencia">
                           <input type="hidden" name="herencia_id" value="<?= $h['id'] ?>">
                           <button type="submit" class="btn btn-ghost btn-sm"
                             style="color:var(--rojo)">✗ Dejar de vender</button>
@@ -1452,7 +1452,7 @@ if ($tipo_suc === 'padre') {
                         <td><?= $p['cantidad_disponible'] ?? '—' ?></td>
                         <td>
                           <form method="POST" style="display:inline">
-                            <input type="hidden" name="accion" value="toggle">
+                            <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="toggle">
                             <input type="hidden" name="pid" value="<?= $p['id'] ?>">
                             <button type="submit" class="toggle-estado <?= $p['activo'] ? 'activo' : 'inactivo' ?>">
                               <?= $p['activo'] ? '✓ Activo' : '✗ Inactivo' ?>
@@ -1463,7 +1463,7 @@ if ($tipo_suc === 'padre') {
                           <div style="display:flex;gap:6px">
                             <a href="vendedor.php?edit=<?= $p['id'] ?>" class="btn btn-ghost btn-sm">✏️</a>
                             <form method="POST" onsubmit="return confirm('¿Eliminar este producto?')">
-                              <input type="hidden" name="accion" value="delete">
+                              <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="delete">
                               <input type="hidden" name="pid" value="<?= $p['id'] ?>">
                               <button type="submit" class="btn btn-danger btn-sm">🗑</button>
                             </form>
@@ -1687,7 +1687,7 @@ if ($tipo_suc === 'padre') {
                   <?= estado_label($p['estado']) ?>
                 </span>
                 <form method="POST">
-                  <input type="hidden" name="accion" value="estado_pedido">
+                  <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="estado_pedido">
                   <input type="hidden" name="pedido_id" value="<?= $p['id'] ?>">
                   <select name="estado" onchange="this.form.submit()"
                     style="width:auto;margin:0;font-size:0.82rem;padding:5px 10px">
@@ -1804,7 +1804,7 @@ if ($tipo_suc === 'padre') {
             <div style="display:flex;gap:8px;align-items:center">
               <?php if (!$sol || $sol['estado'] === 'rechazado'): ?>
                 <form method="POST">
-                  <input type="hidden" name="accion" value="solicitar_admin">
+                  <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="solicitar_admin">
                   <input type="hidden" name="trab_id" value="<?= $t['id'] ?>">
                   <button class="btn btn-sm" style="background:#E8F5E9;color:#2E7D32;border:none;font-weight:700"
                     title="Solicitar que sea admin de la panadería">
@@ -1814,7 +1814,7 @@ if ($tipo_suc === 'padre') {
               <?php endif; ?>
 
               <form method="POST" onsubmit="return confirm('¿Eliminar este trabajador?')">
-                <input type="hidden" name="accion" value="eliminar_trabajador">
+                <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="eliminar_trabajador">
                 <input type="hidden" name="trab_id" value="<?= $t['id'] ?>">
                 <button class="btn btn-sm" style="background:#FFEBEE;color:#C62828;border:none;font-weight:700">🗑️</button>
               </form>
@@ -1831,7 +1831,7 @@ if ($tipo_suc === 'padre') {
       <h3>🪪 Tu Identificador Único</h3>
       <p style="color:var(--gris);font-size:0.85rem;margin-bottom:16px">Solo letras, números y guiones bajos.</p>
       <form method="POST">
-        <input type="hidden" name="accion" value="set_identificador">
+        <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="set_identificador">
         <div style="margin-bottom:14px">
           <label style="display:block;font-weight:700;margin-bottom:4px">Identificador</label>
           <div style="display:flex;align-items:center;gap:6px">
@@ -1854,7 +1854,7 @@ if ($tipo_suc === 'padre') {
     <div class="modal-box" onclick="event.stopPropagation()" style="max-width:520px">
       <h3>👤 Agregar Trabajador</h3>
       <form method="POST" enctype="multipart/form-data">
-        <input type="hidden" name="accion" value="crear_trabajador">
+        <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="crear_trabajador">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
           <div>
             <label style="display:block;font-weight:700;font-size:0.85rem;margin-bottom:4px">Nombre completo *</label>
@@ -1969,7 +1969,7 @@ if ($tipo_suc === 'padre') {
       </p>
 
       <form method="POST" style="display:grid;gap:14px;max-width:620px">
-        <input type="hidden" name="accion" value="crear_invitacion_sucursal">
+        <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="crear_invitacion_sucursal">
 
         <div class="field">
           <label for="nombre_sucursal">Nombre de la sucursal</label>
@@ -2137,7 +2137,7 @@ if ($tipo_suc === 'padre') {
         </div>
 
         <form method="POST" style="display:grid;gap:14px;max-width:500px">
-          <input type="hidden" name="accion" value="asignar_herencia">
+          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="asignar_herencia">
 
           <div class="field">
             <label>Sucursal Hija</label>
@@ -2395,7 +2395,7 @@ if ($tipo_suc === 'padre') {
 
   <div class="sec-card perfil-wrap">
     <form method="POST" enctype="multipart/form-data">
-      <input type="hidden" name="accion" value="perfil">
+      <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="perfil">
 
       <!-- Avatar -->
       <div style="display:flex;align-items:center;gap:20px;margin-bottom:24px">

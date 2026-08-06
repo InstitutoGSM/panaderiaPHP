@@ -10,6 +10,7 @@ $u_actual = usuario_actual();
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><?= h($titulo) ?></title>
+  <meta name="csrf-token" content="<?= csrf_token() ?>">
   <link rel="stylesheet" href="<?= SITE_URL ?>/css/global.css">
   <?php if (!empty($extra_css)): ?>
     <link rel="stylesheet" href="<?= SITE_URL ?>/css/<?= h($extra_css) ?>">

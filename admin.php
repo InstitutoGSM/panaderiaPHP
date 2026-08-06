@@ -1485,6 +1485,9 @@ foreach ($vendedores as $v) {
         for (const [k, v] of Object.entries(datos)) fd.append(k, v);
         const res = await fetch(SITE_URL + '/admin.php', {
           method: 'POST',
+          headers: {
+            'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content ?? ''
+          },
           body: fd
         });
         const data = await res.json();
@@ -1569,6 +1572,9 @@ foreach ($vendedores as $v) {
       });
       fetch('admin.php', {
           method: 'POST',
+          headers: {
+            'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content ?? ''
+          },
           body
         })
         .then(r => r.json())
