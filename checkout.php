@@ -260,7 +260,9 @@ $u = usuario_actual();
         const medios = (info.medios_pago || 'efectivo').split(',').filter(Boolean);
         if (!medios.includes('efectivo')) medios.unshift('efectivo');
 
-        grupos[vid] = {
+        grupos[clave] = {
+          vendedor_id: vid,
+          sucursal_id: grupo.sucursal_id,
           nombre: info.nombre_panaderia || info.nombre || 'Panadería',
           items: itms,
           medios,
@@ -279,7 +281,7 @@ $u = usuario_actual();
       const el = document.getElementById('resumen-items');
       let totalGeneral = 0;
 
-      el.innerHTML = Object.entries(grupos).map(([vid, g]) => {
+      el.innerHTML = Object.entries(grupos).map(([clave, g]) => {
         const subtotal = g.items.reduce((acc, i) => acc + i.precio * i.cantidad, 0);
         totalGeneral += subtotal;
 
@@ -333,17 +335,21 @@ $u = usuario_actual();
 
       // Eventos de seleccion de pago
       el.querySelectorAll('.pago-opt').forEach(btn => {
-        btn.addEventListener('click', () => seleccionarPago(btn.dataset.vendedor, btn.dataset.pago));
+        btn.addEventListener('click', () => seleccionarPago(btn.dataset.grupo, btn.dataset.pago));
         btn.addEventListener('keydown', e => {
-          if (e.key === 'Enter' || e.key === ' ') seleccionarPago(btn.dataset.vendedor, btn.dataset.pago);
+          if (e.key === 'Enter' || e.key === ' ') {
+            seleccionarPago(btn.dataset.grupo, btn.dataset.pago);
+          }
         });
       });
 
       actualizarTarjeta();
     }
 
-    function seleccionarPago(vid, pago) {
-      grupos[vid].pagoSel = pago;
+    function seleccionarPago(clave, pago) {
+      if (!grupos[clave]) return;
+
+      grupos[clave].pagoSel = pago;
       renderResumen();
     }
 
@@ -427,8 +433,9 @@ $u = usuario_actual();
         notas: document.getElementById('co-notas').value.trim() || null,
         ultimos4,
         tipo_tarjeta: tipoTarj,
-        grupos: Object.entries(grupos).map(([vid, g]) => ({
-          vendedor_id: vid,
+        grupos: Object.entries(grupos).map(([clave, g]) => ({
+          vendedor_id: g.vendedor_id,
+          sucursal_id: g.sucursal_id,
           medio_pago: g.pagoSel,
           items: g.items.map(i => ({
             producto_id: i.id,
