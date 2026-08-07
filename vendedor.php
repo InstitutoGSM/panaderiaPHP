@@ -39,7 +39,8 @@ try {
   $sp = db()->prepare("SELECT * FROM solicitudes_padre WHERE vendedor_id = ? ORDER BY id DESC LIMIT 1");
   $sp->execute([$uid]);
   $sol_padre = $sp->fetch() ?: null;
-} catch (Exception $e) {}
+} catch (Exception $e) {
+}
 
 /* ══════════════════════════════════════════════════════════════════════════
    POST HANDLERS
@@ -78,23 +79,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $msg_err = 'Solo el Encargado Padre puede crear sucursales Hija.';
     } else {
       $nombre_sucursal = trim($_POST['nombre_sucursal'] ?? '');
-      $direccion        = trim($_POST['direccion'] ?? '');
-      $telefono         = trim($_POST['telefono'] ?? '');
-      $nombre_invitado  = trim($_POST['nombre_invitado'] ?? '');
-      $email_invitado   = strtolower(trim($_POST['email_invitado'] ?? ''));
+      $direccion       = trim($_POST['direccion'] ?? '');
+      $telefono        = trim($_POST['telefono'] ?? '');
+      $nombre_invitado = trim($_POST['nombre_invitado'] ?? '');
 
-      if (!$nombre_sucursal || !$nombre_invitado || !$email_invitado) {
-        $msg_err = 'Nombre de sucursal, nombre del invitado y email son obligatorios.';
+      $email_invitado = null;
+
+      if (!$nombre_sucursal || !$nombre_invitado) {
+        $msg_err = 'El nombre de la sucursal y el nombre del encargado son obligatorios.';
       } elseif (mb_strlen($nombre_sucursal) > 255) {
         $msg_err = 'El nombre de la sucursal no puede superar los 255 caracteres.';
       } elseif (mb_strlen($nombre_invitado) > 120) {
-        $msg_err = 'El nombre del invitado no puede superar los 120 caracteres.';
+        $msg_err = 'El nombre del encargado no puede superar los 120 caracteres.';
       } elseif (mb_strlen($direccion) > 500) {
         $msg_err = 'La dirección no puede superar los 500 caracteres.';
       } elseif (mb_strlen($telefono) > 50) {
         $msg_err = 'El teléfono no puede superar los 50 caracteres.';
-      } elseif (!filter_var($email_invitado, FILTER_VALIDATE_EMAIL)) {
-        $msg_err = 'El email del invitado no es válido.';
       } else {
         $pdo = db();
 
@@ -614,21 +614,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   }
 
   /* ── Asignar todos los productos activos a una Hija ─────────────────── */
-if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
-  $sucursal_id = (int)($_POST['sucursal_id'] ?? 0);
+  if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
+    $sucursal_id = (int)($_POST['sucursal_id'] ?? 0);
 
-  if (!$sucursal_id) {
-    $msg_err = 'Seleccioná una sucursal Hija.';
-  } else {
-    $pdo = db();
+    if (!$sucursal_id) {
+      $msg_err = 'Seleccioná una sucursal Hija.';
+    } else {
+      $pdo = db();
 
-    try {
-      $pdo->beginTransaction();
+      try {
+        $pdo->beginTransaction();
 
-      /*
+        /*
        * Confirmar nuevamente que el usuario actual es Padre.
        */
-      $padre_q = $pdo->prepare("
+        $padre_q = $pdo->prepare("
         SELECT id
         FROM usuarios
         WHERE id = ?
@@ -639,18 +639,18 @@ if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
         FOR UPDATE
       ");
 
-      $padre_q->execute([$uid]);
+        $padre_q->execute([$uid]);
 
-      if (!$padre_q->fetchColumn()) {
-        throw new RuntimeException(
-          'La cuenta actual no está habilitada como Encargado Padre.'
-        );
-      }
+        if (!$padre_q->fetchColumn()) {
+          throw new RuntimeException(
+            'La cuenta actual no está habilitada como Encargado Padre.'
+          );
+        }
 
-      /*
+        /*
        * Confirmar que la sucursal Hija pertenece a este Padre.
        */
-      $hija_q = $pdo->prepare("
+        $hija_q = $pdo->prepare("
         SELECT s.id
         FROM sucursales s
         INNER JOIN usuarios hija
@@ -666,21 +666,21 @@ if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
         FOR UPDATE
       ");
 
-      $hija_q->execute([
-        $sucursal_id,
-        $uid
-      ]);
+        $hija_q->execute([
+          $sucursal_id,
+          $uid
+        ]);
 
-      if (!$hija_q->fetchColumn()) {
-        throw new RuntimeException(
-          'La sucursal Hija seleccionada no pertenece a este Padre.'
-        );
-      }
+        if (!$hija_q->fetchColumn()) {
+          throw new RuntimeException(
+            'La sucursal Hija seleccionada no pertenece a este Padre.'
+          );
+        }
 
-      /*
+        /*
        * Obtener sólo los productos activos del Padre.
        */
-      $productos_q = $pdo->prepare("
+        $productos_q = $pdo->prepare("
         SELECT
           id,
           precio
@@ -690,16 +690,16 @@ if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
         ORDER BY id
       ");
 
-      $productos_q->execute([$uid]);
-      $productos_activos = $productos_q->fetchAll();
+        $productos_q->execute([$uid]);
+        $productos_activos = $productos_q->fetchAll();
 
-      if (!$productos_activos) {
-        throw new RuntimeException(
-          'El Padre todavía no tiene productos activos para asignar.'
-        );
-      }
+        if (!$productos_activos) {
+          throw new RuntimeException(
+            'El Padre todavía no tiene productos activos para asignar.'
+          );
+        }
 
-      /*
+        /*
        * Asignar cada producto a la Hija.
        *
        * El precio mínimo queda igual al precio del Padre.
@@ -709,7 +709,7 @@ if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
        *
        * Si ya no cumple, vuelve a estado pendiente.
        */
-      $asignar = $pdo->prepare("
+        $asignar = $pdo->prepare("
         INSERT INTO herencia_productos (
           producto_id,
           padre_id,
@@ -738,37 +738,37 @@ if ($accion === 'asignar_todos_herencia' && $tipo_suc === 'padre') {
           END
       ");
 
-      foreach ($productos_activos as $producto) {
-        $asignar->execute([
-          (int)$producto['id'],
-          $uid,
-          $sucursal_id,
-          (float)$producto['precio']
-        ]);
+        foreach ($productos_activos as $producto) {
+          $asignar->execute([
+            (int)$producto['id'],
+            $uid,
+            $sucursal_id,
+            (float)$producto['precio']
+          ]);
+        }
+
+        $cantidad_asignada = count($productos_activos);
+
+        $pdo->commit();
+
+        $msg_ok =
+          'Se asignaron ' .
+          $cantidad_asignada .
+          ' productos activos a la sucursal Hija. ' .
+          'La Hija deberá aceptarlos antes de venderlos.';
+      } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+          $pdo->rollBack();
+        }
+
+        $msg_err = $e instanceof RuntimeException
+          ? $e->getMessage()
+          : 'No se pudieron asignar los productos a la sucursal Hija.';
       }
-
-      $cantidad_asignada = count($productos_activos);
-
-      $pdo->commit();
-
-      $msg_ok =
-        'Se asignaron ' .
-        $cantidad_asignada .
-        ' productos activos a la sucursal Hija. ' .
-        'La Hija deberá aceptarlos antes de venderlos.';
-    } catch (Throwable $e) {
-      if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-      }
-
-      $msg_err = $e instanceof RuntimeException
-        ? $e->getMessage()
-        : 'No se pudieron asignar los productos a la sucursal Hija.';
     }
-  }
 
-  $seccion = 'hijas';
-}
+    $seccion = 'hijas';
+  }
 
   /* ── Aceptar herencia con precio propio (solo Hija) ──────────────────── */
   if ($accion === 'aceptar_herencia' && $tipo_suc === 'hija') {
@@ -2015,9 +2015,8 @@ if ($tipo_suc === 'padre') {
       </div>
 
       <p style="color:var(--gris);font-size:0.88rem;margin:0 0 18px">
-        La sucursal quedará pendiente hasta que el futuro Encargado Hijo
-        acepte la invitación.
-      </p>
+        La sucursal quedará pendiente hasta que la futura Encargada Hija
+        acepte la invitación y cree sus credenciales. </p>
 
       <form method="POST" style="display:grid;gap:14px;max-width:620px">
         <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>"><input type="hidden" name="accion" value="crear_invitacion_sucursal">
@@ -2063,18 +2062,12 @@ if ($tipo_suc === 'padre') {
             placeholder="Nombre completo"
             required>
         </div>
-
-        <div class="field">
-          <label for="email_invitado">Email del futuro Encargado Hijo</label>
-          <input
-            type="email"
-            id="email_invitado"
-            name="email_invitado"
-            maxlength="180"
-            placeholder="encargado@ejemplo.com"
-            required>
+        <div style="background:#FFF8E1;border-left:4px solid #E6A700;
+            padding:12px 14px;border-radius:8px;
+            color:#765500;font-size:0.88rem">
+          El futuro Encargado Hija ingresará su propio Gmail y contraseña
+          al aceptar la invitación.
         </div>
-
         <button type="submit" class="btn btn-naranja">
           Crear sucursal e invitación
         </button>
@@ -2240,62 +2233,61 @@ if ($tipo_suc === 'padre') {
       </div>
 
       <!-- Asignar todos los productos activos -->
-<div class="sec-card" style="margin-top:20px">
-  <div class="sec-card-top">
-    <h2>Asignar todos los productos activos</h2>
-  </div>
+      <div class="sec-card" style="margin-top:20px">
+        <div class="sec-card-top">
+          <h2>Asignar todos los productos activos</h2>
+        </div>
 
-  <p style="color:var(--gris);font-size:0.88rem;margin:0 0 18px">
-    Envía todos tus productos activos a una sucursal Hija.
-    Cada producto quedará pendiente de aceptación y su precio mínimo
-    será igual al precio actual del Padre.
-  </p>
+        <p style="color:var(--gris);font-size:0.88rem;margin:0 0 18px">
+          Envía todos tus productos activos a una sucursal Hija.
+          Cada producto quedará pendiente de aceptación y su precio mínimo
+          será igual al precio actual del Padre.
+        </p>
 
-  <p style="color:var(--gris);font-size:0.82rem;margin:0 0 14px">
-    Productos activos disponibles:
-    <strong><?= (int)$st['activos'] ?></strong>
-  </p>
+        <p style="color:var(--gris);font-size:0.82rem;margin:0 0 14px">
+          Productos activos disponibles:
+          <strong><?= (int)$st['activos'] ?></strong>
+        </p>
 
-  <form
-    method="POST"
-    style="display:grid;gap:14px;max-width:500px"
-    onsubmit="return confirm(
+        <form
+          method="POST"
+          style="display:grid;gap:14px;max-width:500px"
+          onsubmit="return confirm(
       '¿Asignar todos los productos activos a esta sucursal Hija?'
     )">
 
-    <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
-    <input
-      type="hidden"
-      name="accion"
-      value="asignar_todos_herencia">
+          <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+          <input
+            type="hidden"
+            name="accion"
+            value="asignar_todos_herencia">
 
-    <div class="field">
-      <label>Sucursal Hija</label>
+          <div class="field">
+            <label>Sucursal Hija</label>
 
-      <select name="sucursal_id" required>
-        <option value="">
-          — Seleccioná una hija —
-        </option>
+            <select name="sucursal_id" required>
+              <option value="">
+                — Seleccioná una hija —
+              </option>
 
-        <?php foreach ($mis_hijas as $h): ?>
-          <option value="<?= $h['sucursal_id'] ?>">
-            <?= h(
-              $h['sucursal_nombre'] ?:
-              ($h['nombre_panaderia'] ?: $h['nombre'])
-            ) ?>
-          </option>
-        <?php endforeach; ?>
-      </select>
-    </div>
+              <?php foreach ($mis_hijas as $h): ?>
+                <option value="<?= $h['sucursal_id'] ?>">
+                  <?= h(
+                    $h['sucursal_nombre'] ?: ($h['nombre_panaderia'] ?: $h['nombre'])
+                  ) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
 
-    <button
-      type="submit"
-      class="btn btn-naranja">
+          <button
+            type="submit"
+            class="btn btn-naranja">
 
-      Asignar todos los productos
-    </button>
-  </form>
-</div>
+            Asignar todos los productos
+          </button>
+        </form>
+      </div>
 
       <!-- Asignaciones realizadas -->
       <?php if (!empty($herencias_padre)): ?>
