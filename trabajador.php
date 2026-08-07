@@ -69,61 +69,254 @@ $encargado = db()->prepare("SELECT nombre, nombre_panaderia FROM usuarios WHERE 
 $encargado->execute([$pan_id]);
 $enc = $encargado->fetch();
 
-// Productos de la panadería
-$prods = db()->prepare("SELECT id, nombre, categoria, cantidad_disponible FROM productos WHERE vendedor_id = ? AND activo = 1 ORDER BY nombre");
-$prods->execute([$pan_id]);
+// Productos de la panadería con stock real de la sucursal asignada
+$prods = db()->prepare("
+    SELECT
+        p.id,
+        p.nombre,
+        p.categoria,
+        COALESCE(
+            ss.cantidad_disponible,
+            CASE
+                WHEN s.padre_id IS NULL THEN COALESCE(p.cantidad_disponible, 0)
+                ELSE 0
+            END
+        ) AS cantidad_disponible
+    FROM productos p
+    INNER JOIN sucursales s
+        ON s.id = ?
+       AND s.activo = 1
+       AND s.estado = 'activa'
+    LEFT JOIN stock_sucursal ss
+        ON ss.producto_id = p.id
+       AND ss.sucursal_id = s.id
+    WHERE p.vendedor_id = ?
+      AND p.activo = 1
+    ORDER BY p.nombre
+");
+
+$prods->execute([$sucursal_id, $pan_id]);
 $productos = $prods->fetchAll();
 
 // POST: movimiento de stock
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $tipo     = $_POST['tipo']       ?? '';
+    $tipo     = $_POST['tipo'] ?? '';
     $prod_id  = (int)($_POST['producto_id'] ?? 0);
-    $cantidad = (int)($_POST['cantidad']    ?? 0);
+    $cantidad = (int)($_POST['cantidad'] ?? 0);
     $desc     = trim($_POST['descripcion'] ?? '');
 
-    if (!in_array($tipo, ['entrada', 'salida']) || !$prod_id || $cantidad <= 0) {
+    if (!in_array($tipo, ['entrada', 'salida'], true) || !$prod_id || $cantidad <= 0) {
         $msg_err = 'Completá todos los campos correctamente.';
+    } elseif (mb_strlen($desc) > 300) {
+        $msg_err = 'La descripción no puede superar los 300 caracteres.';
     } else {
-        // Verificar que el producto pertenece a esta panadería
-        $chk = db()->prepare("SELECT id, cantidad_disponible FROM productos WHERE id = ? AND vendedor_id = ? LIMIT 1");
-        $chk->execute([$prod_id, $pan_id]);
-        $prod = $chk->fetch();
+        $pdo = db();
 
-        if (!$prod) {
-            $msg_err = 'Producto inválido.';
-        } elseif ($tipo === 'salida' && $prod['cantidad_disponible'] < $cantidad) {
-            $msg_err = 'Stock insuficiente (disponible: ' . $prod['cantidad_disponible'] . ').';
-        } else {
-            try {
-                $pdo = db();
-                $pdo->beginTransaction();
+        try {
+            $pdo->beginTransaction();
 
-                $delta = $tipo === 'entrada' ? $cantidad : -$cantidad;
-                $pdo->prepare("UPDATE productos SET cantidad_disponible = cantidad_disponible + ? WHERE id = ?")->execute([$delta, $prod_id]);
-                $pdo->prepare("
-    INSERT INTO movimientos
-        (tipo, producto_id, cantidad, descripcion, trabajador_id, vendedor_id, sucursal_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-")->execute([
-                    $tipo,
-                    $prod_id,
+            /*
+             * Verificar que:
+             * - El producto pertenece a la panadería.
+             * - La sucursal está activa.
+             * - La sucursal pertenece a esta panadería.
+             * - La fila queda bloqueada durante la operación.
+             */
+            $producto_q = $pdo->prepare("
+                SELECT
+                    p.id,
+                    p.cantidad_disponible,
+                    s.padre_id
+                FROM productos p
+                INNER JOIN sucursales s
+                    ON s.id = ?
+                   AND s.activo = 1
+                   AND s.estado = 'activa'
+                   AND (
+                       s.vendedor_id = ?
+                       OR s.padre_id = ?
+                   )
+                WHERE p.id = ?
+                  AND p.vendedor_id = ?
+                  AND p.activo = 1
+                LIMIT 1
+                FOR UPDATE
+            ");
+
+            $producto_q->execute([
+                $sucursal_id,
+                $pan_id,
+                $pan_id,
+                $prod_id,
+                $pan_id
+            ]);
+
+            $producto = $producto_q->fetch();
+
+            if (!$producto) {
+                throw new RuntimeException(
+                    'El producto o la sucursal no son válidos.'
+                );
+            }
+
+            /*
+             * Compatibilidad:
+             * - La sucursal Padre comienza usando el stock histórico
+             *   de productos.cantidad_disponible.
+             * - La sucursal Hija comienza con stock cero.
+             *
+             * INSERT IGNORE evita duplicar la fila si otro proceso
+             * la creó previamente.
+             */
+            $stock_inicial = $producto['padre_id'] === null
+                ? max(0, (int)$producto['cantidad_disponible'])
+                : 0;
+
+            $crear_stock_q = $pdo->prepare("
+                INSERT IGNORE INTO stock_sucursal (
+                    producto_id,
+                    sucursal_id,
+                    cantidad_disponible,
+                    stock_minimo,
+                    activo
+                )
+                VALUES (?, ?, ?, 0, 1)
+            ");
+
+            $crear_stock_q->execute([
+                $prod_id,
+                $sucursal_id,
+                $stock_inicial
+            ]);
+
+            /*
+             * Bloquear el stock real de esta sucursal.
+             */
+            $stock_q = $pdo->prepare("
+                SELECT cantidad_disponible
+                FROM stock_sucursal
+                WHERE producto_id = ?
+                  AND sucursal_id = ?
+                  AND activo = 1
+                LIMIT 1
+                FOR UPDATE
+            ");
+
+            $stock_q->execute([
+                $prod_id,
+                $sucursal_id
+            ]);
+
+            $stock = $stock_q->fetch();
+
+            if (!$stock) {
+                throw new RuntimeException(
+                    'No se pudo preparar el stock de la sucursal.'
+                );
+            }
+
+            $stock_actual = max(0, (int)$stock['cantidad_disponible']);
+
+            if ($tipo === 'salida') {
+                if ($stock_actual < $cantidad) {
+                    throw new RuntimeException(
+                        'Stock insuficiente. Disponible: ' . $stock_actual . '.'
+                    );
+                }
+
+                /*
+                 * La condición cantidad_disponible >= ?
+                 * evita stock negativo incluso ante operaciones simultáneas.
+                 */
+                $actualizar_stock_q = $pdo->prepare("
+                    UPDATE stock_sucursal
+                    SET cantidad_disponible = cantidad_disponible - ?
+                    WHERE producto_id = ?
+                      AND sucursal_id = ?
+                      AND activo = 1
+                      AND cantidad_disponible >= ?
+                ");
+
+                $actualizar_stock_q->execute([
                     $cantidad,
-                    $desc ?: null,
-                    $uid,
-                    $pan_id,
+                    $prod_id,
+                    $sucursal_id,
+                    $cantidad
+                ]);
+
+                if ($actualizar_stock_q->rowCount() !== 1) {
+                    throw new RuntimeException(
+                        'El stock cambió mientras se registraba la salida. Intentá nuevamente.'
+                    );
+                }
+            } else {
+                /*
+                 * GREATEST evita conservar valores negativos
+                 * si existiera un registro antiguo inconsistente.
+                 */
+                $actualizar_stock_q = $pdo->prepare("
+                    UPDATE stock_sucursal
+                    SET cantidad_disponible =
+                        GREATEST(cantidad_disponible + ?, 0)
+                    WHERE producto_id = ?
+                      AND sucursal_id = ?
+                      AND activo = 1
+                ");
+
+                $actualizar_stock_q->execute([
+                    $cantidad,
+                    $prod_id,
                     $sucursal_id
                 ]);
 
-                $pdo->commit();
-                $msg_ok = 'Movimiento registrado ✅';
-
-                // Recargar productos
-                $prods->execute([$pan_id]);
-                $productos = $prods->fetchAll();
-            } catch (Exception $e) {
-                $pdo->rollBack();
-                $msg_err = 'Error: ' . $e->getMessage();
+                if ($actualizar_stock_q->rowCount() !== 1) {
+                    throw new RuntimeException(
+                        'No se pudo actualizar el stock de la sucursal.'
+                    );
+                }
             }
+
+            /*
+             * Guardar el movimiento con la sucursal real.
+             */
+            $movimiento_q = $pdo->prepare("
+                INSERT INTO movimientos (
+                    tipo,
+                    producto_id,
+                    cantidad,
+                    descripcion,
+                    trabajador_id,
+                    vendedor_id,
+                    sucursal_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ");
+
+            $movimiento_q->execute([
+                $tipo,
+                $prod_id,
+                $cantidad,
+                $desc !== '' ? $desc : null,
+                $uid,
+                $pan_id,
+                $sucursal_id
+            ]);
+
+            $pdo->commit();
+
+            $msg_ok = 'Movimiento registrado correctamente.';
+
+            /*
+             * Recargar el stock real de la sucursal.
+             */
+            $prods->execute([$sucursal_id, $pan_id]);
+            $productos = $prods->fetchAll();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+
+            $msg_err = $e->getMessage();
         }
     }
 }

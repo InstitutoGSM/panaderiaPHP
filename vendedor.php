@@ -405,15 +405,99 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
       }
       if (!$msg_err) {
-        db()->prepare("
-                    INSERT INTO productos
-                      (vendedor_id, nombre, descripcion, precio, categoria,
-                       unidad_venta, precio_media_docena, precio_docena,
-                       cantidad_disponible, dato_extra, imagen_url)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                ")->execute([$uid, $nombre, $desc, $precio, $cat, $unidad, $med_doc, $docena, $stock, $extra, $img_url]);
-        $msg_ok  = '¡Producto publicado! 🎉';
-        $seccion = 'productos';
+        $pdo = db();
+
+        try {
+          $pdo->beginTransaction();
+
+          $producto_q = $pdo->prepare("
+            INSERT INTO productos
+              (
+                vendedor_id,
+                nombre,
+                descripcion,
+                precio,
+                categoria,
+                unidad_venta,
+                precio_media_docena,
+                precio_docena,
+                cantidad_disponible,
+                dato_extra,
+                imagen_url
+              )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ");
+
+          $producto_q->execute([
+            $uid,
+            $nombre,
+            $desc,
+            $precio,
+            $cat,
+            $unidad,
+            $med_doc,
+            $docena,
+            max(0, $stock),
+            $extra,
+            $img_url
+          ]);
+
+          $producto_id_nuevo = (int)$pdo->lastInsertId();
+
+          /*
+           * Crear el stock independiente de la sucursal Padre.
+           * No se toca productos.cantidad_disponible: se conserva
+           * como compatibilidad con datos y código anterior.
+           */
+          $stock_padre_q = $pdo->prepare("
+            SELECT id
+            FROM sucursales
+            WHERE vendedor_id = ?
+              AND padre_id IS NULL
+              AND activo = 1
+              AND estado = 'activa'
+            ORDER BY id
+            LIMIT 1
+          ");
+
+          $stock_padre_q->execute([$uid]);
+          $sucursal_padre_id_nueva = (int)($stock_padre_q->fetchColumn() ?: 0);
+
+          if (!$sucursal_padre_id_nueva) {
+            throw new RuntimeException(
+              'El producto se creó, pero no se encontró una sucursal Padre activa.'
+            );
+          }
+
+          $crear_stock_q = $pdo->prepare("
+            INSERT IGNORE INTO stock_sucursal (
+              producto_id,
+              sucursal_id,
+              cantidad_disponible,
+              stock_minimo,
+              activo
+            )
+            VALUES (?, ?, ?, 0, 1)
+          ");
+
+          $crear_stock_q->execute([
+            $producto_id_nuevo,
+            $sucursal_padre_id_nueva,
+            max(0, $stock)
+          ]);
+
+          $pdo->commit();
+
+          $msg_ok = '¡Producto publicado! 🎉';
+          $seccion = 'productos';
+        } catch (Throwable $e) {
+          if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+          }
+
+          $msg_err = 'No se pudo crear el producto: ' . $e->getMessage();
+          $seccion = 'add';
+        }
       }
     }
   }
@@ -646,22 +730,63 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $msg_err = 'La sucursal Hija seleccionada no es válida o no pertenece a este Padre.';
       } else {
         try {
-          db()->prepare("
-          INSERT INTO herencia_productos
-            (producto_id, padre_id, sucursal_id, precio_minimo)
-          VALUES (?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE
-            precio_minimo = VALUES(precio_minimo),
-            aceptado = 0,
-            precio_sucursal = NULL
-        ")->execute([
-            $prod_id,
-            $uid,
-            $sucursal_id,
-            $precio_min
-          ]);
+          $pdo = db();
 
-          $msg_ok = '¡Producto asignado a la sucursal Hija! ✅';
+          try {
+            $pdo->beginTransaction();
+
+            $herencia_q = $pdo->prepare("
+              INSERT INTO herencia_productos
+                (
+                  producto_id,
+                  padre_id,
+                  sucursal_id,
+                  precio_minimo
+                )
+              VALUES (?, ?, ?, ?)
+              ON DUPLICATE KEY UPDATE
+                precio_minimo = VALUES(precio_minimo),
+                aceptado = 0,
+                precio_sucursal = NULL
+            ");
+
+            $herencia_q->execute([
+              $prod_id,
+              $uid,
+              $sucursal_id,
+              $precio_min
+            ]);
+
+            /*
+             * La Hija empieza con stock cero.
+             * Si ya existe la fila, se conserva su cantidad actual.
+             */
+            $stock_hija_q = $pdo->prepare("
+              INSERT IGNORE INTO stock_sucursal (
+                producto_id,
+                sucursal_id,
+                cantidad_disponible,
+                stock_minimo,
+                activo
+              )
+              VALUES (?, ?, 0, 0, 1)
+            ");
+
+            $stock_hija_q->execute([
+              $prod_id,
+              $sucursal_id
+            ]);
+
+            $pdo->commit();
+
+            $msg_ok = '¡Producto asignado a la sucursal Hija! ✅';
+          } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+              $pdo->rollBack();
+            }
+
+            $msg_err = 'No se pudo asignar el producto: ' . $e->getMessage();
+          }
         } catch (Exception $e) {
           $msg_err = 'No se pudo asignar el producto.';
         }
@@ -796,12 +921,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           END
       ");
 
+        $crear_stock_hija = $pdo->prepare("
+          INSERT IGNORE INTO stock_sucursal (
+            producto_id,
+            sucursal_id,
+            cantidad_disponible,
+            stock_minimo,
+            activo
+          )
+          VALUES (?, ?, 0, 0, 1)
+        ");
+
         foreach ($productos_activos as $producto) {
+          $producto_id_masivo = (int)$producto['id'];
+
           $asignar->execute([
-            (int)$producto['id'],
+            $producto_id_masivo,
             $uid,
             $sucursal_id,
             (float)$producto['precio']
+          ]);
+
+          /*
+           * Crear el stock de la Hija sin sobrescribir una cantidad
+           * que ya haya sido transferida anteriormente.
+           */
+          $crear_stock_hija->execute([
+            $producto_id_masivo,
+            $sucursal_id
           ]);
         }
 
@@ -852,19 +999,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $msg_err = 'El precio debe ser igual o mayor al precio mínimo (' .
           precio((float)$her['precio_minimo']) . ').';
       } else {
-        db()->prepare("
-        UPDATE herencia_productos
-        SET aceptado = 1,
-            precio_sucursal = ?
-        WHERE id = ?
-          AND sucursal_id = ?
-      ")->execute([
-          $precio_sucursal,
-          $her_id,
-          $mi_sucursal_id
-        ]);
+        $pdo = db();
 
-        $msg_ok = '¡Producto aceptado y activo en tu tienda! ✅';
+        try {
+          $pdo->beginTransaction();
+
+          $aceptar_q = $pdo->prepare("
+            UPDATE herencia_productos
+            SET aceptado = 1,
+                precio_sucursal = ?
+            WHERE id = ?
+              AND sucursal_id = ?
+          ");
+
+          $aceptar_q->execute([
+            $precio_sucursal,
+            $her_id,
+            $mi_sucursal_id
+          ]);
+
+          if ($aceptar_q->rowCount() !== 1) {
+            throw new RuntimeException(
+              'No se pudo activar la herencia del producto.'
+            );
+          }
+
+          /*
+           * Asegurar que la Hija tenga su fila de stock.
+           * Se inicia en cero y no se sobrescribe stock transferido.
+           */
+          $producto_herencia_q = $pdo->prepare("
+            SELECT producto_id
+            FROM herencia_productos
+            WHERE id = ?
+              AND sucursal_id = ?
+            LIMIT 1
+          ");
+
+          $producto_herencia_q->execute([
+            $her_id,
+            $mi_sucursal_id
+          ]);
+
+          $producto_herencia_id = (int)$producto_herencia_q->fetchColumn();
+
+          if (!$producto_herencia_id) {
+            throw new RuntimeException(
+              'No se encontró el producto de la herencia.'
+            );
+          }
+
+          $crear_stock_hija_q = $pdo->prepare("
+            INSERT IGNORE INTO stock_sucursal (
+              producto_id,
+              sucursal_id,
+              cantidad_disponible,
+              stock_minimo,
+              activo
+            )
+            VALUES (?, ?, 0, 0, 1)
+          ");
+
+          $crear_stock_hija_q->execute([
+            $producto_herencia_id,
+            $mi_sucursal_id
+          ]);
+
+          $pdo->commit();
+
+          $msg_ok = '¡Producto aceptado y activo en tu tienda! ✅';
+        } catch (Throwable $e) {
+          if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+          }
+
+          $msg_err = 'No se pudo activar el producto: ' . $e->getMessage();
+        }
       }
     }
 
@@ -895,6 +1105,308 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     $seccion = 'productos';
+  }
+
+  /* ── Transferir stock del Padre a una Hija ─────────────────────────── */
+  if ($accion === 'transferir_stock' && $tipo_suc === 'padre') {
+    $producto_id     = (int)($_POST['producto_id'] ?? 0);
+    $sucursal_hija_id = (int)($_POST['sucursal_hija_id'] ?? 0);
+    $cantidad         = (int)($_POST['cantidad'] ?? 0);
+
+    $seccion = 'hijas';
+
+    if (!$producto_id || !$sucursal_hija_id || $cantidad <= 0) {
+      $msg_err = 'Seleccioná una sucursal, un producto y una cantidad válida.';
+    } else {
+      $pdo = db();
+
+      try {
+        $pdo->beginTransaction();
+
+        /*
+         * Confirmar que el producto pertenece al Padre
+         * y obtener su sucursal principal.
+         */
+        $producto_q = $pdo->prepare("
+          SELECT
+            p.id,
+            p.nombre,
+            p.cantidad_disponible,
+            s.id AS sucursal_padre_id
+          FROM productos p
+          INNER JOIN sucursales s
+            ON s.vendedor_id = ?
+           AND s.padre_id IS NULL
+           AND s.activo = 1
+           AND s.estado = 'activa'
+          WHERE p.id = ?
+            AND p.vendedor_id = ?
+            AND p.activo = 1
+          LIMIT 1
+          FOR UPDATE
+        ");
+
+        $producto_q->execute([
+          $uid,
+          $producto_id,
+          $uid
+        ]);
+
+        $producto = $producto_q->fetch();
+
+        if (!$producto) {
+          throw new RuntimeException(
+            'El producto no pertenece a tu panadería o no está activo.'
+          );
+        }
+
+        $sucursal_padre_id = (int)$producto['sucursal_padre_id'];
+
+        /*
+         * Confirmar que la sucursal Hija pertenece a este Padre.
+         */
+        $hija_q = $pdo->prepare("
+          SELECT
+            s.id,
+            s.nombre
+          FROM sucursales s
+          INNER JOIN usuarios hija
+            ON hija.id = s.vendedor_id
+          WHERE s.id = ?
+            AND s.activo = 1
+            AND s.estado = 'activa'
+            AND hija.tipo = 'vendedor'
+            AND hija.is_admin_pan = 1
+            AND hija.tipo_sucursal = 'hija'
+            AND hija.sucursal_padre_id = ?
+          LIMIT 1
+          FOR UPDATE
+        ");
+
+        $hija_q->execute([
+          $sucursal_hija_id,
+          $uid
+        ]);
+
+        $sucursal_hija = $hija_q->fetch();
+
+        if (!$sucursal_hija) {
+          throw new RuntimeException(
+            'La sucursal Hija seleccionada no pertenece a este Padre.'
+          );
+        }
+
+        /*
+         * La Hija sólo puede recibir productos heredados y aceptados.
+         */
+        $herencia_q = $pdo->prepare("
+          SELECT id
+          FROM herencia_productos
+          WHERE producto_id = ?
+            AND padre_id = ?
+            AND sucursal_id = ?
+            AND aceptado = 1
+          LIMIT 1
+          FOR UPDATE
+        ");
+
+        $herencia_q->execute([
+          $producto_id,
+          $uid,
+          $sucursal_hija_id
+        ]);
+
+        if (!$herencia_q->fetchColumn()) {
+          throw new RuntimeException(
+            'La Hija todavía no aceptó este producto o no lo tiene heredado.'
+          );
+        }
+
+        /*
+         * Crear los registros de stock si todavía no existen.
+         *
+         * La sucursal Padre toma inicialmente el stock histórico
+         * de productos.cantidad_disponible.
+         *
+         * La sucursal Hija comienza en cero.
+         *
+         * No se modifica el stock existente si las filas ya estaban creadas.
+         */
+        $crear_stock_q = $pdo->prepare("
+          INSERT INTO stock_sucursal (
+            producto_id,
+            sucursal_id,
+            cantidad_disponible,
+            stock_minimo,
+            activo
+          )
+          VALUES (?, ?, ?, 0, 1)
+          ON DUPLICATE KEY UPDATE
+            activo = 1
+        ");
+
+        $crear_stock_q->execute([
+          $producto_id,
+          $sucursal_padre_id,
+          max(0, (int)$producto['cantidad_disponible'])
+        ]);
+
+        $crear_stock_q->execute([
+          $producto_id,
+          $sucursal_hija_id,
+          0
+        ]);
+
+        /*
+         * Bloquear ambos stocks antes de modificarlos.
+         */
+        $stocks_q = $pdo->prepare("
+          SELECT
+            sucursal_id,
+            cantidad_disponible
+          FROM stock_sucursal
+          WHERE producto_id = ?
+            AND sucursal_id IN (?, ?)
+            AND activo = 1
+          ORDER BY sucursal_id
+          FOR UPDATE
+        ");
+
+        $stocks_q->execute([
+          $producto_id,
+          $sucursal_padre_id,
+          $sucursal_hija_id
+        ]);
+
+        $stocks = [];
+
+        foreach ($stocks_q->fetchAll() as $stock) {
+          $stocks[(int)$stock['sucursal_id']] = (int)$stock['cantidad_disponible'];
+        }
+
+        if (
+          !array_key_exists($sucursal_padre_id, $stocks) ||
+          !array_key_exists($sucursal_hija_id, $stocks)
+        ) {
+          throw new RuntimeException(
+            'No se pudo preparar el stock de ambas sucursales.'
+          );
+        }
+
+        $stock_padre_actual = max(0, $stocks[$sucursal_padre_id]);
+
+        if ($stock_padre_actual < $cantidad) {
+          throw new RuntimeException(
+            'Stock insuficiente en la sucursal Padre. Disponible: ' .
+              $stock_padre_actual . '.'
+          );
+        }
+
+        /*
+         * Descontar stock del Padre.
+         * La condición evita stock negativo incluso ante operaciones
+         * simultáneas.
+         */
+        $descontar_q = $pdo->prepare("
+          UPDATE stock_sucursal
+          SET cantidad_disponible = cantidad_disponible - ?
+          WHERE producto_id = ?
+            AND sucursal_id = ?
+            AND activo = 1
+            AND cantidad_disponible >= ?
+        ");
+
+        $descontar_q->execute([
+          $cantidad,
+          $producto_id,
+          $sucursal_padre_id,
+          $cantidad
+        ]);
+
+        if ($descontar_q->rowCount() !== 1) {
+          throw new RuntimeException(
+            'El stock del Padre cambió mientras se realizaba la transferencia. Intentá nuevamente.'
+          );
+        }
+
+        /*
+         * Aumentar stock de la Hija.
+         */
+        $aumentar_q = $pdo->prepare("
+          UPDATE stock_sucursal
+          SET cantidad_disponible = cantidad_disponible + ?
+          WHERE producto_id = ?
+            AND sucursal_id = ?
+            AND activo = 1
+        ");
+
+        $aumentar_q->execute([
+          $cantidad,
+          $producto_id,
+          $sucursal_hija_id
+        ]);
+
+        if ($aumentar_q->rowCount() !== 1) {
+          throw new RuntimeException(
+            'No se pudo aumentar el stock de la sucursal Hija.'
+          );
+        }
+
+        /*
+         * Registrar salida del Padre.
+         *
+         * Se utiliza el ID del Padre como trabajador_id porque movimientos
+         * exige ese campo y la operación la realiza el propio Padre.
+         */
+        $movimiento_q = $pdo->prepare("
+          INSERT INTO movimientos (
+            tipo,
+            producto_id,
+            cantidad,
+            descripcion,
+            trabajador_id,
+            vendedor_id,
+            sucursal_id
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        ");
+
+        $movimiento_q->execute([
+          'salida',
+          $producto_id,
+          $cantidad,
+          'Transferencia a sucursal Hija #' . $sucursal_hija_id,
+          $uid,
+          $uid,
+          $sucursal_padre_id
+        ]);
+
+        /*
+         * Registrar entrada en la Hija.
+         */
+        $movimiento_q->execute([
+          'entrada',
+          $producto_id,
+          $cantidad,
+          'Transferencia desde sucursal Padre #' . $sucursal_padre_id,
+          $uid,
+          $uid,
+          $sucursal_hija_id
+        ]);
+
+        $pdo->commit();
+
+        $msg_ok =
+          'Se transfirieron ' . $cantidad . ' unidades de "' .
+          $producto['nombre'] . '" a la sucursal Hija.';
+      } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+          $pdo->rollBack();
+        }
+
+        $msg_err = $e->getMessage();
+      }
+    }
   }
 
   /* ── Guardar perfil ───────────────────────────────────────────────── */
@@ -1070,7 +1582,6 @@ if ($tipo_suc === 'padre') {
   ");
   $suc_trab_q->execute([$uid, $uid]);
   $sucursales_trabajador = $suc_trab_q->fetchAll();
-
 } elseif ($tipo_suc === 'hija') {
   $suc_trab_q = db()->prepare("
     SELECT
@@ -1129,7 +1640,6 @@ if ($tipo_suc === 'padre') {
 
   $movs_hist_q->execute([$uid, $uid, $uid]);
   $movimientos_historial = $movs_hist_q->fetchAll();
-
 } elseif ($tipo_suc === 'hija' && $mi_sucursal_id) {
   /*
    * La Hija solo ve los movimientos de su propia sucursal.
@@ -2502,6 +3012,96 @@ if ($tipo_suc === 'padre') {
         </form>
       </div>
 
+      <!-- Transferencia de stock a una Hija -->
+      <div class="sec-card" style="margin-top:20px">
+        <div class="sec-card-top">
+          <h2>Transferir stock a una sucursal Hija</h2>
+        </div>
+
+        <p style="color:var(--gris);font-size:0.88rem;margin:0 0 18px">
+          Transferí unidades desde el stock de tu sucursal Padre.
+          El producto debe estar heredado y aceptado por la sucursal Hija.
+        </p>
+
+        <form method="POST" style="display:grid;gap:14px;max-width:520px">
+          <input
+            type="hidden"
+            name="csrf_token"
+            value="<?= csrf_token() ?>">
+
+          <input
+            type="hidden"
+            name="accion"
+            value="transferir_stock">
+
+          <div class="field">
+            <label for="sucursal_hija_id">Sucursal Hija</label>
+
+            <select
+              id="sucursal_hija_id"
+              name="sucursal_hija_id"
+              required>
+
+              <option value="">
+                — Seleccioná una sucursal Hija —
+              </option>
+
+              <?php foreach ($mis_hijas as $h): ?>
+                <option value="<?= (int)$h['sucursal_id'] ?>">
+                  <?= h(
+                    $h['sucursal_nombre']
+                      ?: ($h['nombre_panaderia'] ?: $h['nombre'])
+                  ) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="producto_id_transferencia">Producto</label>
+
+            <select
+              id="producto_id_transferencia"
+              name="producto_id"
+              required>
+
+              <option value="">
+                — Seleccioná un producto —
+              </option>
+
+              <?php foreach ($productos as $p): ?>
+                <?php if (empty($p['activo'])) continue; ?>
+
+                <option value="<?= (int)$p['id'] ?>">
+                  <?= h($p['nombre']) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="cantidad_transferencia">Cantidad</label>
+
+            <input
+              type="number"
+              id="cantidad_transferencia"
+              name="cantidad"
+              min="1"
+              step="1"
+              required
+              placeholder="Ej:  10">
+          </div>
+
+          <button
+            type="submit"
+            class="btn btn-naranja"
+            onclick="return confirm('¿Confirmás esta transferencia de stock?')">
+
+            Transferir stock
+          </button>
+        </form>
+      </div>
+
       <!-- Asignaciones realizadas -->
       <?php if (!empty($herencias_padre)): ?>
         <div class="sec-card" style="margin-top:20px">
@@ -2598,13 +3198,13 @@ if ($tipo_suc === 'padre') {
             <tbody>
               <?php foreach ($movimientos_historial as $m): ?>
                 <?php
-                  $tipo_movimiento = $m['tipo'] === 'entrada'
-                    ? 'Entrada'
-                    : ($m['tipo'] === 'salida' ? 'Salida' : ucfirst($m['tipo']));
+                $tipo_movimiento = $m['tipo'] === 'entrada'
+                  ? 'Entrada'
+                  : ($m['tipo'] === 'salida' ? 'Salida' : ucfirst($m['tipo']));
 
-                  $color_movimiento = $m['tipo'] === 'entrada'
-                    ? '#2E7D32'
-                    : '#C62828';
+                $color_movimiento = $m['tipo'] === 'entrada'
+                  ? '#2E7D32'
+                  : '#C62828';
                 ?>
                 <tr style="border-bottom:1px solid var(--crema-dark)">
                   <td style="padding:10px 8px;white-space:nowrap;color:var(--gris)">
