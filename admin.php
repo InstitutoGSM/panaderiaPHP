@@ -70,6 +70,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $vid = (int)($_POST['vendedor_id'] ?? 0);
   $uid = (int)($_POST['uid'] ?? 0);
 
+  if ($accion === 'aprobar_solicitud_padre') {
+    $sid = (int)($_POST['sol_id'] ?? 0);
+    $pdo = db();
+    try {
+      $sol = $pdo->prepare("SELECT * FROM solicitudes_padre WHERE id = ? AND estado = 'pendiente' LIMIT 1");
+      $sol->execute([$sid]);
+      $s = $sol->fetch();
+      if (!$s) { echo json_encode(['ok'=>false,'msg'=>'Solicitud no encontrada']); exit; }
+      $v_id = (int)$s['vendedor_id'];
+      $pdo->beginTransaction();
+      $pdo->prepare("UPDATE usuarios SET is_admin_pan=1, puede_ser_admin=1, tipo_sucursal='padre', sucursal_padre_id=NULL WHERE id=? AND tipo='vendedor'")->execute([$v_id]);
+      $existe = $pdo->prepare("SELECT id FROM sucursales WHERE vendedor_id=? AND padre_id IS NULL LIMIT 1");
+      $existe->execute([$v_id]);
+      if (!$existe->fetch()) {
+        $nom = $pdo->prepare("SELECT nombre_panaderia, nombre FROM usuarios WHERE id=?");
+        $nom->execute([$v_id]);
+        $datos = $nom->fetch();
+        $nombre_suc = $datos['nombre_panaderia'] ?: $datos['nombre'];
+        $pdo->prepare("INSERT INTO sucursales (vendedor_id, nombre, activo, estado) VALUES (?, ?, 1, 'activa')")->execute([$v_id, $nombre_suc]);
+      }
+      $pdo->prepare("UPDATE solicitudes_padre SET estado='aprobada', updated_at=NOW() WHERE id=?")->execute([$sid]);
+      $pdo->commit();
+      echo json_encode(['ok'=>true,'msg'=>'Vendedor convertido en Encargado Padre ✅']);
+    } catch (Exception $e) {
+      $pdo->rollBack();
+      echo json_encode(['ok'=>false,'msg'=>'Error: '.$e->getMessage()]);
+    }
+    exit;
+  }
+
+  if ($accion === 'rechazar_solicitud_padre') {
+    $sid    = (int)($_POST['sol_id'] ?? 0);
+    $motivo = trim($_POST['motivo'] ?? '');
+    if (!$sid) { echo json_encode(['ok'=>false,'msg'=>'ID inválido']); exit; }
+    db()->prepare("UPDATE solicitudes_padre SET estado='rechazada', motivo_rechazo=?, updated_at=NOW() WHERE id=? AND estado='pendiente'")->execute([$motivo ?: null, $sid]);
+    echo json_encode(['ok'=>true,'msg'=>'Solicitud rechazada.']);
+    exit;
+  }
+
   switch ($accion) {
 
     // ── Verificacion (existente) ──────────────────────────────────────
@@ -618,6 +657,17 @@ foreach ($vendedores as $v) {
   $e = $v['estado_verificacion'] ?? 'sin_enviar';
   if (isset($stats[$e])) $stats[$e]++;
 }
+
+$solicitudes_padre = [];
+try {
+  $solicitudes_padre = db()->query("
+    SELECT sp.*, u.nombre, u.email, u.estado_verificacion
+    FROM solicitudes_padre sp
+    JOIN usuarios u ON u.id = sp.vendedor_id
+    WHERE sp.estado = 'pendiente'
+    ORDER BY sp.created_at ASC
+  ")->fetchAll();
+} catch (Exception $e) {}
 
 // Solicitudes para ser Padre
 $solicitudes_padre = [];
