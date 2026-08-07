@@ -411,6 +411,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$nombre || $precio <= 0) {
       $msg_err = 'Completá nombre y precio.';
       $seccion = 'add';
+
+    } elseif (!in_array($cat, $categorias_activas, true)) {
+      $msg_err = 'La categoría seleccionada no existe o está inactiva.';
+      $seccion = 'add';
+
     } else {
       $img_url = null;
       if (!empty($_FILES['imagen']['name'])) {

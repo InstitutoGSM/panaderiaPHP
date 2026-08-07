@@ -11,8 +11,21 @@ $cat        = $_GET['cat']           ?? 'todos';
 $vendedor   = (int)($_GET['vendedor'] ?? 0);
 $orden      = $_GET['orden']         ?? 'reciente';
 
-$cats_valid = ['todos', 'pan', 'facturas', 'galletas', 'cakes', 'otro'];
-if (!in_array($cat, $cats_valid)) $cat = 'todos';
+$categorias_catalogo = db()->query("
+  SELECT slug, nombre, emoji
+  FROM categorias
+  WHERE activo = 1
+  ORDER BY nombre ASC
+")->fetchAll();
+
+$cats_valid = array_merge(
+  ['todos'],
+  array_column($categorias_catalogo, 'slug')
+);
+
+if (!in_array($cat, $cats_valid, true)) {
+  $cat = 'todos';
+}
 
 $ordenes = [
   'reciente'    => 'p.created_at DESC',
@@ -201,19 +214,20 @@ include __DIR__ . '/includes/header.php';
     <div>
       <div class="filtros-cat">
         <!-- filtros -->
-        <?php
-        $categorias = [
-          'todos'    => 'Todos',
-          'pan'      => '🍞 Pan',
-          'facturas' => '🥐 Facturas',
-          'galletas' => '🍪 Galletas',
-          'cakes'    => '🎂 Cakes',
-          'otro'     => '✨ Otro',
-        ];
-        foreach ($categorias as $key => $label): ?>
-          <a href="catalogo.php?cat=<?= $key ?>&q=<?= urlencode($q) ?>&orden=<?= h($orden) ?><?= $vendedor ? '&vendedor=' . $vendedor : '' ?>"
-            class="filtro <?= $cat === $key ? 'on' : '' ?>">
-            <?= $label ?>
+        <a
+          href="catalogo.php?cat=todos&q=<?= urlencode($q) ?>&orden=<?= h($orden) ?><?= $vendedor ? '&vendedor=' . $vendedor : '' ?>"
+          class="filtro <?= $cat === 'todos' ? 'on' : '' ?>"
+        >
+          Todas
+        </a>
+
+        <?php foreach ($categorias_catalogo as $categoria): ?>
+          <a
+            href="catalogo.php?cat=<?= urlencode($categoria['slug']) ?>&q=<?= urlencode($q) ?>&orden=<?= h($orden) ?><?= $vendedor ? '&vendedor=' . $vendedor : '' ?>"
+            class="filtro <?= $cat === $categoria['slug'] ? 'on' : '' ?>"
+          >
+            <?= h($categoria['emoji']) ?>
+            <?= h($categoria['nombre']) ?>
           </a>
         <?php endforeach; ?>
       </div>

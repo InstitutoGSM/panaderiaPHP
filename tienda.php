@@ -4,7 +4,10 @@ require_once __DIR__ . '/includes/functions.php';
 
 // ── Parámetro vendedor ────────────────────────────────────────────────────
 $vid = (int)($_GET['id'] ?? 0);
-if (!$vid) { header('Location: ' . SITE_URL . '/catalogo.php'); exit; }
+if (!$vid) {
+  header('Location: ' . SITE_URL . '/catalogo.php');
+  exit;
+}
 
 // ── Perfil del vendedor ───────────────────────────────────────────────────
 $stmt = db()->prepare("
@@ -17,7 +20,8 @@ $stmt = db()->prepare("
 $stmt->execute([$vid]);
 $v = $stmt->fetch();
 if (!$v || $v['estado_verificacion'] !== 'aprobado') {
-    header('Location: ' . SITE_URL . '/catalogo.php'); exit;
+  header('Location: ' . SITE_URL . '/catalogo.php');
+  exit;
 }
 
 // ── Productos activos del vendedor ────────────────────────────────────────
@@ -40,6 +44,7 @@ $page_title = h($nombre_pan);
 ?>
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -47,189 +52,193 @@ $page_title = h($nombre_pan);
   <link rel="stylesheet" href="<?= SITE_URL ?>/css/global.css">
   <link rel="stylesheet" href="<?= SITE_URL ?>/css/tienda.css">
 </head>
+
 <body>
 
-<!-- ══ NAVBAR CON BUSCADOR DE TIENDA ══════════════════════════════════════ -->
-<nav class="navbar" role="navigation">
-  <div class="navbar-inner">
-    <a href="<?= SITE_URL ?>/" class="navbar-logo">
-      <img src="<?= SITE_URL ?>/assets/logo.png" alt="Logo" onerror="this.style.display='none'">
-      Panaderia<span class="marca">PUMA</span>
-    </a>
-    <div class="navbar-search" role="search">
-      <span class="ico" aria-hidden="true">🔍</span>
-      <input type="search" id="search-tienda"
-             placeholder="Buscar en esta tienda..."
-             aria-label="Buscar en la tienda">
-    </div>
-    <div class="navbar-actions">
-      <a href="<?= SITE_URL ?>/catalogo.php" class="btn btn-ghost btn-sm">← Volver</a>
-      <button class="cart-btn" id="cart-toggle" aria-label="Carrito">
-        🛒 <span class="cart-badge" id="cart-badge-count">0</span>
-      </button>
-    </div>
-  </div>
-</nav>
-
-<!-- ══ HEADER DE TIENDA ════════════════════════════════════════════════════ -->
-<header class="tienda-header" id="tienda-header-wrap">
-  <div class="container">
-    <a href="<?= SITE_URL ?>/catalogo.php" class="volver">← Todas las panaderías</a>
-    <div class="tienda-info">
-
-      <!-- Avatar -->
-      <div class="tienda-avatar">
-        <?php if ($v['avatar_url']): ?>
-          <img src="<?= h($v['avatar_url']) ?>" alt="<?= h($nombre_pan) ?>">
-        <?php else: ?>
-          <?= iniciales($nombre_pan) ?>
-        <?php endif; ?>
+  <!-- ══ NAVBAR CON BUSCADOR DE TIENDA ══════════════════════════════════════ -->
+  <nav class="navbar" role="navigation">
+    <div class="navbar-inner">
+      <a href="<?= SITE_URL ?>/" class="navbar-logo">
+        <img src="<?= SITE_URL ?>/assets/logo.png" alt="Logo" onerror="this.style.display='none'">
+        Panaderia<span class="marca">PUMA</span>
+      </a>
+      <div class="navbar-search" role="search">
+        <span class="ico" aria-hidden="true">🔍</span>
+        <input type="search" id="search-tienda"
+          placeholder="Buscar en esta tienda..."
+          aria-label="Buscar en la tienda">
       </div>
+      <div class="navbar-actions">
+        <a href="<?= SITE_URL ?>/catalogo.php" class="btn btn-ghost btn-sm">← Volver</a>
+        <button class="cart-btn" id="cart-toggle" aria-label="Carrito">
+          🛒 <span class="cart-badge" id="cart-badge-count">0</span>
+        </button>
+      </div>
+    </div>
+  </nav>
 
-      <!-- Datos -->
-      <div>
-        <div class="tienda-nombre"><?= h($nombre_pan) ?></div>
-        <p class="tienda-desc">
-          <?= h($v['descripcion'] ?: 'Panadería artesanal') ?>
-        </p>
-        <div class="tienda-meta">
-          <?php if ($v['instagram']): ?>
-            <a href="https://instagram.com/<?= h($v['instagram']) ?>"
-               target="_blank" rel="noopener">
-              📸 @<?= h($v['instagram']) ?>
-            </a>
-          <?php endif; ?>
-          <?php if ($v['telefono']): ?>
-            <a href="tel:<?= h($v['telefono']) ?>">
-              📞 <?= h($v['telefono']) ?>
-            </a>
-          <?php endif; ?>
-          <?php if ($v['email_contacto']): ?>
-            <a href="mailto:<?= h($v['email_contacto']) ?>">
-              ✉️ <?= h($v['email_contacto']) ?>
-            </a>
+  <!-- ══ HEADER DE TIENDA ════════════════════════════════════════════════════ -->
+  <header class="tienda-header" id="tienda-header-wrap">
+    <div class="container">
+      <a href="<?= SITE_URL ?>/catalogo.php" class="volver">← Todas las panaderías</a>
+      <div class="tienda-info">
+
+        <!-- Avatar -->
+        <div class="tienda-avatar">
+          <?php if ($v['avatar_url']): ?>
+            <img src="<?= h($v['avatar_url']) ?>" alt="<?= h($nombre_pan) ?>">
+          <?php else: ?>
+            <?= iniciales($nombre_pan) ?>
           <?php endif; ?>
         </div>
-        <?php if ($v['telefono']): ?>
-          <?php
+
+        <!-- Datos -->
+        <div>
+          <div class="tienda-nombre"><?= h($nombre_pan) ?></div>
+          <p class="tienda-desc">
+            <?= h($v['descripcion'] ?: 'Panadería artesanal') ?>
+          </p>
+          <div class="tienda-meta">
+            <?php if ($v['instagram']): ?>
+              <a href="https://instagram.com/<?= h($v['instagram']) ?>"
+                target="_blank" rel="noopener">
+                📸 @<?= h($v['instagram']) ?>
+              </a>
+            <?php endif; ?>
+            <?php if ($v['telefono']): ?>
+              <a href="tel:<?= h($v['telefono']) ?>">
+                📞 <?= h($v['telefono']) ?>
+              </a>
+            <?php endif; ?>
+            <?php if ($v['email_contacto']): ?>
+              <a href="mailto:<?= h($v['email_contacto']) ?>">
+                ✉️ <?= h($v['email_contacto']) ?>
+              </a>
+            <?php endif; ?>
+          </div>
+          <?php if ($v['telefono']): ?>
+            <?php
             $tel_clean = preg_replace('/\D/', '', $v['telefono']);
             $msg_wa    = urlencode('Hola! Vi tu tienda en PanaderiaMarket 🥖');
-          ?>
-          <a href="https://wa.me/<?= $tel_clean ?>?text=<?= $msg_wa ?>"
-             target="_blank" rel="noopener"
-             style="display:inline-flex;align-items:center;gap:8px;
+            ?>
+            <a href="https://wa.me/<?= $tel_clean ?>?text=<?= $msg_wa ?>"
+              target="_blank" rel="noopener"
+              style="display:inline-flex;align-items:center;gap:8px;
                     background:#25D366;color:white;padding:9px 18px;
                     border-radius:50px;font-weight:700;font-size:0.88rem;
                     margin-top:12px;text-decoration:none">
-            💬 Consultar por WhatsApp
-          </a>
-        <?php endif; ?>
+              💬 Consultar por WhatsApp
+            </a>
+          <?php endif; ?>
+        </div>
+
       </div>
-
     </div>
-  </div>
-</header>
+  </header>
 
-<!-- Banner anuncio del vendedor -->
-<?php if ($v['banner_anuncio']): ?>
-  <div style="background:linear-gradient(90deg,var(--naranja),var(--naranja-lt));
+  <!-- Banner anuncio del vendedor -->
+  <?php if ($v['banner_anuncio']): ?>
+    <div style="background:linear-gradient(90deg,var(--naranja),var(--naranja-lt));
               color:white;text-align:center;padding:12px 20px;
               font-weight:700;font-size:0.9rem;">
-    📢 <?= h($v['banner_anuncio']) ?>
-  </div>
-<?php endif; ?>
-
-<!-- ══ MAIN ═══════════════════════════════════════════════════════════════ -->
-<main class="container">
-
-  <!-- Filtros por categoría -->
-  <?php if (!empty($categorias)): ?>
-    <div id="filtros-tienda" class="filtros sec-sm" role="group" aria-label="Categorías">
-      <button class="filtro on" data-cat="todos" aria-pressed="true">Todos</button>
-      <?php foreach ($categorias as $cat): ?>
-        <button class="filtro" data-cat="<?= h($cat) ?>" aria-pressed="false">
-          <?= cat_emoji($cat) ?> <?= ucfirst(h($cat)) ?>
-        </button>
-      <?php endforeach; ?>
+      📢 <?= h($v['banner_anuncio']) ?>
     </div>
   <?php endif; ?>
 
-  <!-- Contador -->
-  <div class="toolbar">
-    <span class="toolbar-count" id="count-tienda"></span>
-  </div>
+  <!-- ══ MAIN ═══════════════════════════════════════════════════════════════ -->
+  <main class="container">
 
-  <!-- Grid de productos (lo llena JS) -->
-  <div id="grid-tienda" class="grid-productos sec-sm" role="list"></div>
+    <!-- Filtros por categoría -->
+    <?php if (!empty($categorias)): ?>
+      <div id="filtros-tienda" class="filtros sec-sm" role="group" aria-label="Categorías">
+        <button class="filtro on" data-cat="todos" aria-pressed="true">Todos</button>
+        <?php foreach ($categorias as $cat): ?>
+          <button class="filtro" data-cat="<?= h($cat) ?>" aria-pressed="false">
+            <?= cat_emoji($cat) ?> <?= h(cat_label($cat)) ?>
+          </button>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
 
-  <!-- Estado vacío -->
-  <div id="empty-tienda" class="empty-state" style="display:none">
-    <span class="ico">🍞</span>
-    <h3>No se encontraron productos</h3>
-    <p>Probá con otro filtro o búsqueda</p>
-  </div>
+    <!-- Contador -->
+    <div class="toolbar">
+      <span class="toolbar-count" id="count-tienda"></span>
+    </div>
 
-</main>
+    <!-- Grid de productos (lo llena JS) -->
+    <div id="grid-tienda" class="grid-productos sec-sm" role="list"></div>
 
-<?php include __DIR__ . '/includes/footer.php'; ?>
+    <!-- Estado vacío -->
+    <div id="empty-tienda" class="empty-state" style="display:none">
+      <span class="ico">🍞</span>
+      <h3>No se encontraron productos</h3>
+      <p>Probá con otro filtro o búsqueda</p>
+    </div>
 
-<!-- ══ DATOS PARA JS ════════════════════════════════════════════════════════ -->
-<script>
-const SITE_URL   = '<?= SITE_URL ?>';
-const NOMBRE_PAN = <?= json_encode($nombre_pan) ?>;
+  </main>
 
-// Todos los productos pasados desde PHP
-const TODOS_PRODUCTOS = <?= json_encode(array_values($productos)) ?>;
+  <?php include __DIR__ . '/includes/footer.php'; ?>
 
-/* ══ ESTADO ════════════════════════════════════════════════════════════════ */
-let catActual = 'todos';
-let busqueda  = '';
+  <!-- ══ DATOS PARA JS ════════════════════════════════════════════════════════ -->
+  <script>
+    const SITE_URL = '<?= SITE_URL ?>';
+    const NOMBRE_PAN = <?= json_encode($nombre_pan) ?>;
 
-/* ══ RENDER ════════════════════════════════════════════════════════════════ */
-function formatPrecio(n) {
-  return '$' + Number(n).toLocaleString('es-AR', { minimumFractionDigits: 0 });
-}
-function h(str) {
-  const d = document.createElement('div');
-  d.textContent = str ?? '';
-  return d.innerHTML;
-}
+    // Todos los productos pasados desde PHP
+    const TODOS_PRODUCTOS = <?= json_encode(array_values($productos)) ?>;
 
-function render() {
-  const grid  = document.getElementById('grid-tienda');
-  const empty = document.getElementById('empty-tienda');
-  const count = document.getElementById('count-tienda');
-  const q     = busqueda.toLowerCase().trim();
+    /* ══ ESTADO ════════════════════════════════════════════════════════════════ */
+    let catActual = 'todos';
+    let busqueda = '';
 
-  const filtrados = TODOS_PRODUCTOS.filter(p => {
-    const porCat = catActual === 'todos' || p.categoria === catActual;
-    const porQ   = !q
-      || p.nombre.toLowerCase().includes(q)
-      || (p.descripcion || '').toLowerCase().includes(q);
-    return porCat && porQ;
-  });
+    /* ══ RENDER ════════════════════════════════════════════════════════════════ */
+    function formatPrecio(n) {
+      return '$' + Number(n).toLocaleString('es-AR', {
+        minimumFractionDigits: 0
+      });
+    }
 
-  count.textContent = filtrados.length
-    ? `${filtrados.length} producto${filtrados.length !== 1 ? 's' : ''}`
-    : '';
+    function h(str) {
+      const d = document.createElement('div');
+      d.textContent = str ?? '';
+      return d.innerHTML;
+    }
 
-  if (filtrados.length === 0) {
-    grid.innerHTML  = '';
-    empty.style.display = 'block';
-    return;
-  }
-  empty.style.display = 'none';
+    function render() {
+      const grid = document.getElementById('grid-tienda');
+      const empty = document.getElementById('empty-tienda');
+      const count = document.getElementById('count-tienda');
+      const q = busqueda.toLowerCase().trim();
 
-  grid.innerHTML = filtrados.map(p => {
-    const sinStock   = p.cantidad_disponible !== null && parseInt(p.cantidad_disponible) === 0;
-    const imgHtml    = p.imagen_url
-      ? `<img src="${h(p.imagen_url)}" alt="${h(p.nombre)}" class="card-img" loading="lazy">`
-      : `<div class="card-img" style="display:flex;align-items:center;
+      const filtrados = TODOS_PRODUCTOS.filter(p => {
+        const porCat = catActual === 'todos' || p.categoria === catActual;
+        const porQ = !q ||
+          p.nombre.toLowerCase().includes(q) ||
+          (p.descripcion || '').toLowerCase().includes(q);
+        return porCat && porQ;
+      });
+
+      count.textContent = filtrados.length ?
+        `${filtrados.length} producto${filtrados.length !== 1 ? 's' : ''}` :
+        '';
+
+      if (filtrados.length === 0) {
+        grid.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+
+      grid.innerHTML = filtrados.map(p => {
+        const sinStock = p.cantidad_disponible !== null && parseInt(p.cantidad_disponible) === 0;
+        const imgHtml = p.imagen_url ?
+          `<img src="${h(p.imagen_url)}" alt="${h(p.nombre)}" class="card-img" loading="lazy">` :
+          `<div class="card-img" style="display:flex;align-items:center;
               justify-content:center;font-size:3rem;background:var(--crema-dark)">
            🍞
          </div>`;
 
-    return `
+        return `
       <article class="card" data-id="${p.id}"
                role="listitem" tabindex="0"
                style="cursor:pointer${sinStock ? ';opacity:.7' : ''}">
@@ -243,8 +252,8 @@ function render() {
         </div>
         <div class="card-body">
           <span class="badge badge-${h(p.categoria)}" style="font-size:.7rem;margin-bottom:6px">
-            ${h(p.categoria || '')}
-          </span>
+  ${h(p.categoria || '')}
+</span>
           <h3 class="card-nombre">${h(p.nombre)}</h3>
           ${p.descripcion
             ? `<p class="card-desc">${h(p.descripcion.slice(0, 70))}${p.descripcion.length > 70 ? '…' : ''}</p>`
@@ -266,57 +275,64 @@ function render() {
           </div>
         </div>
       </article>`;
-  }).join('');
+      }).join('');
 
-  // Navegar al producto al hacer clic en la card
-  grid.querySelectorAll('.card').forEach(card => {
-    card.addEventListener('click', e => {
-      if (e.target.closest('button') || e.target.closest('a')) return;
-      window.location.href = `${SITE_URL}/producto.php?id=${card.dataset.id}`;
-    });
-    card.addEventListener('keydown', e => {
-      if (e.key === 'Enter')
-        window.location.href = `${SITE_URL}/producto.php?id=${card.dataset.id}`;
-    });
-  });
+      // Navegar al producto al hacer clic en la card
+      grid.querySelectorAll('.card').forEach(card => {
+        card.addEventListener('click', e => {
+          if (e.target.closest('button') || e.target.closest('a')) return;
+          window.location.href = `${SITE_URL}/producto.php?id=${card.dataset.id}`;
+        });
+        card.addEventListener('keydown', e => {
+          if (e.key === 'Enter')
+            window.location.href = `${SITE_URL}/producto.php?id=${card.dataset.id}`;
+        });
+      });
 
-  // Agregar al carrito
-  grid.querySelectorAll('.btn-agregar').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const prod = TODOS_PRODUCTOS.find(p => String(p.id) === btn.dataset.id);
-      if (prod && typeof agregarItem === 'function') {
-        agregarItem({ ...prod, nombre_panaderia: NOMBRE_PAN });
-        toast(`${prod.nombre} agregado 🛒`, 'ok');
-      }
-    });
-  });
-}
+      // Agregar al carrito
+      grid.querySelectorAll('.btn-agregar').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const prod = TODOS_PRODUCTOS.find(p => String(p.id) === btn.dataset.id);
+          if (prod && typeof agregarItem === 'function') {
+            agregarItem({
+              ...prod,
+              nombre_panaderia: NOMBRE_PAN
+            });
+            toast(`${prod.nombre} agregado 🛒`, 'ok');
+          }
+        });
+      });
+    }
 
-/* ══ FILTROS ═══════════════════════════════════════════════════════════════ */
-document.querySelectorAll('#filtros-tienda .filtro').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#filtros-tienda .filtro').forEach(b => {
-      b.classList.remove('on');
-      b.setAttribute('aria-pressed', 'false');
+    /* ══ FILTROS ═══════════════════════════════════════════════════════════════ */
+    document.querySelectorAll('#filtros-tienda .filtro').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('#filtros-tienda .filtro').forEach(b => {
+          b.classList.remove('on');
+          b.setAttribute('aria-pressed', 'false');
+        });
+        btn.classList.add('on');
+        btn.setAttribute('aria-pressed', 'true');
+        catActual = btn.dataset.cat;
+        render();
+      });
     });
-    btn.classList.add('on');
-    btn.setAttribute('aria-pressed', 'true');
-    catActual = btn.dataset.cat;
+
+    /* ══ BÚSQUEDA ══════════════════════════════════════════════════════════════ */
+    let _debTimer;
+    document.getElementById('search-tienda').addEventListener('input', e => {
+      clearTimeout(_debTimer);
+      _debTimer = setTimeout(() => {
+        busqueda = e.target.value;
+        render();
+      }, 250);
+    });
+
+    /* ══ INIT ══════════════════════════════════════════════════════════════════ */
     render();
-  });
-});
-
-/* ══ BÚSQUEDA ══════════════════════════════════════════════════════════════ */
-let _debTimer;
-document.getElementById('search-tienda').addEventListener('input', e => {
-  clearTimeout(_debTimer);
-  _debTimer = setTimeout(() => { busqueda = e.target.value; render(); }, 250);
-});
-
-/* ══ INIT ══════════════════════════════════════════════════════════════════ */
-render();
-</script>
+  </script>
 
 </body>
+
 </html>

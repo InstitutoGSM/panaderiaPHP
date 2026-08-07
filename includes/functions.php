@@ -12,7 +12,39 @@ function iniciales(string $nombre): string {
     return $ini ?: '?';
 }
 
+function categoria_info(string $slug): ?array {
+    static $categorias = null;
+
+    if ($categorias === null) {
+        $categorias = [];
+
+        try {
+            $filas = db()->query("
+                SELECT slug, nombre, emoji, activo
+                FROM categorias
+            ")->fetchAll();
+
+            foreach ($filas as $fila) {
+                $categorias[$fila['slug']] = $fila;
+            }
+        } catch (Throwable $e) {
+            $categorias = [];
+        }
+    }
+
+    return $categorias[$slug] ?? null;
+}
+
 function cat_emoji(string $cat): string {
+    $categoria = categoria_info($cat);
+
+    if ($categoria && !empty($categoria['emoji'])) {
+        return $categoria['emoji'];
+    }
+
+    /*
+     * Compatibilidad visual con categorías antiguas.
+     */
     return match($cat) {
         'pan'      => '🍞',
         'facturas' => '🥐',
@@ -23,6 +55,15 @@ function cat_emoji(string $cat): string {
 }
 
 function cat_label(string $cat): string {
+    $categoria = categoria_info($cat);
+
+    if ($categoria && !empty($categoria['nombre'])) {
+        return $categoria['nombre'];
+    }
+
+    /*
+     * Compatibilidad con valores antiguos que todavía puedan existir.
+     */
     return match($cat) {
         'pan'      => 'Pan',
         'facturas' => 'Facturas',

@@ -130,7 +130,7 @@ $page_title = h($p['nombre']);
       <!-- ══ INFO ════════════════════════════════════════════ -->
       <div>
         <span class="badge badge-<?= h($p['categoria']) ?>">
-          <?= cat_emoji($p['categoria']) ?> <?= ucfirst(h($p['categoria'])) ?>
+          <?= cat_emoji($p['categoria']) ?> <?= h(cat_label($p['categoria'])) ?>
         </span>
 
         <h1 style="margin:10px 0 4px"><?= h($p['nombre']) ?></h1>
