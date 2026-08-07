@@ -58,16 +58,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($sol_padre && $sol_padre['estado'] === 'pendiente') {
       $msg_err = 'Ya tenés una solicitud pendiente.';
     } else {
-      db()->prepare("
+      $insertar_solicitud = db()->prepare("
         INSERT INTO solicitudes_padre (vendedor_id, estado)
-        VALUES (?, 'pendiente')
-        ON DUPLICATE KEY UPDATE estado='pendiente', motivo_rechazo=NULL, updated_at=NOW()
-      ")->execute([$uid]);
-      // Recargar solicitud
-      $sp2 = db()->prepare("SELECT * FROM solicitudes_padre WHERE vendedor_id = ? ORDER BY id DESC LIMIT 1");
-      $sp2->execute([$uid]);
-      $sol_padre = $sp2->fetch() ?: null;
-      $msg_ok = 'Solicitud enviada. El administrador la revisará pronto.';
+        SELECT ?, 'pendiente'
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM solicitudes_padre
+          WHERE vendedor_id = ?
+            AND estado = 'pendiente'
+        )
+      ");
+
+      $insertar_solicitud->execute([$uid, $uid]);
+
+      if ($insertar_solicitud->rowCount() === 0) {
+        $msg_err = 'Ya tenés una solicitud pendiente.';
+      } else {
+        // Recargar solicitud
+        $sp2 = db()->prepare("
+          SELECT *
+          FROM solicitudes_padre
+          WHERE vendedor_id = ?
+          ORDER BY id DESC
+          LIMIT 1
+        ");
+        $sp2->execute([$uid]);
+        $sol_padre = $sp2->fetch() ?: null;
+        $msg_ok = 'Solicitud enviada. El administrador la revisará pronto.';
+      }
     }
   }
 
@@ -975,6 +993,82 @@ if ($tipo_suc === 'padre') {
   $mis_hijas = $hijas_stmt->fetchAll();
 }
 
+/* ── Historial de movimientos ─────────────────────────────────────────── */
+$movimientos_historial = [];
+
+if ($tipo_suc === 'padre') {
+  /*
+   * El Padre ve:
+   * - Movimientos de su sucursal Padre.
+   * - Movimientos de sus sucursales Hijas.
+   * - Movimientos antiguos sin sucursal asignada.
+   */
+  $movs_hist_q = db()->prepare("
+    SELECT
+      m.*,
+      p.nombre AS producto_nombre,
+      COALESCE(s.nombre, 'Sin sucursal asignada') AS sucursal_nombre,
+      COALESCE(t.nombre, 'Registro anterior') AS trabajador_nombre
+    FROM movimientos m
+    INNER JOIN productos p
+      ON p.id = m.producto_id
+    LEFT JOIN sucursales s
+      ON s.id = m.sucursal_id
+    LEFT JOIN usuarios t
+      ON t.id = m.trabajador_id
+    WHERE (
+      (
+        m.sucursal_id IS NOT NULL
+        AND (
+          (s.padre_id IS NULL AND s.vendedor_id = ?)
+          OR s.padre_id = ?
+        )
+      )
+      OR (
+        m.sucursal_id IS NULL
+        AND m.vendedor_id = ?
+      )
+    )
+    ORDER BY m.created_at DESC
+    LIMIT 200
+  ");
+
+  $movs_hist_q->execute([$uid, $uid, $uid]);
+  $movimientos_historial = $movs_hist_q->fetchAll();
+
+} elseif ($tipo_suc === 'hija' && $mi_sucursal_id) {
+  /*
+   * La Hija solo ve los movimientos de su propia sucursal.
+   */
+  $movs_hist_q = db()->prepare("
+    SELECT
+      m.*,
+      p.nombre AS producto_nombre,
+      COALESCE(s.nombre, 'Sin sucursal asignada') AS sucursal_nombre,
+      COALESCE(t.nombre, 'Registro anterior') AS trabajador_nombre
+    FROM movimientos m
+    INNER JOIN productos p
+      ON p.id = m.producto_id
+    LEFT JOIN sucursales s
+      ON s.id = m.sucursal_id
+    LEFT JOIN usuarios t
+      ON t.id = m.trabajador_id
+    WHERE
+      (
+        m.sucursal_id = ?
+        OR (
+          m.sucursal_id IS NULL
+          AND m.vendedor_id = ?
+        )
+      )
+    ORDER BY m.created_at DESC
+    LIMIT 200
+  ");
+
+  $movs_hist_q->execute([$mi_sucursal_id, $uid]);
+  $movimientos_historial = $movs_hist_q->fetchAll();
+}
+
 // ── Invitaciones pendientes creadas por este Padre ─────────────────────────
 $invitaciones_pendientes = [];
 $ultima_invitacion = $_SESSION['ultima_invitacion_sucursal'] ?? null;
@@ -1156,6 +1250,11 @@ if ($tipo_suc === 'padre') {
           <li><a href="vendedor.php?sec=metricas" class="<?= $seccion === 'metricas' ? 'on' : '' ?>"><span class="nav-ico">�</span> Métricas</a></li>
         <?php endif; ?>
         <?php if ($tipo_suc): ?>
+          <li>
+            <a href="vendedor.php?sec=movimientos" class="<?= $seccion === 'movimientos' ? 'on' : '' ?>">
+              <span class="nav-ico">📋</span> Historial de movimientos
+            </a>
+          </li>
           <li><a href="vendedor.php?sec=trabajadores" class="<?= $seccion === 'trabajadores' ? 'on' : '' ?>"><span class="nav-ico">👥</span> Trabajadores</a></li>
         <?php endif; ?>
         <li><a href="vendedor.php?sec=perfil" class="<?= $seccion === 'perfil' ? 'on' : '' ?>"><span class="nav-ico">⚙️</span> Mi Perfil</a></li>
@@ -1194,6 +1293,7 @@ if ($tipo_suc === 'padre') {
                 'perfil'       => 'Mi Perfil',
                 'documentos'   => '📂 Mis Documentos',
                 'trabajadores' => '👥 Mis Trabajadores',
+                'movimientos'  => '📋 Historial de movimientos',
                 'hijas'        => '🏬 Mis Sucursales Hija',
                 'metricas'     => '📈 Métricas de Red',
               ];
@@ -2337,7 +2437,94 @@ if ($tipo_suc === 'padre') {
 
   <?php endif; ?>
 
-<?php /* ══════════════════ MÉTRICAS ══════════════════ */ elseif ($seccion === 'metricas'): ?>
+<?php /* ══════════════════ HISTORIAL DE MOVIMIENTOS ══════════════════ */ elseif ($seccion === 'movimientos'): ?>
+
+  <?php if (!in_array($tipo_suc, ['padre', 'hija'], true)): ?>
+
+    <div style="background:#FFEBEE;border-left:4px solid var(--rojo);
+                padding:20px 24px;border-radius:var(--radio)">
+      <p style="margin:0;color:#C62828;font-weight:700">
+        Solo los Encargados Padre o Hija pueden ver este historial.
+      </p>
+    </div>
+
+  <?php else: ?>
+
+    <div class="sec-card">
+      <div class="sec-card-top">
+        <div>
+          <h2>📋 Historial de movimientos</h2>
+          <p style="margin:4px 0 0;color:var(--gris);font-size:0.85rem">
+            Registro de entradas y salidas de stock por sucursal.
+          </p>
+        </div>
+      </div>
+
+      <?php if (empty($movimientos_historial)): ?>
+
+        <div style="text-align:center;padding:48px 20px;color:var(--gris)">
+          <div style="font-size:2.5rem;margin-bottom:10px">📦</div>
+          <p style="margin:0">Todavía no hay movimientos registrados.</p>
+        </div>
+
+      <?php else: ?>
+
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:0.88rem">
+            <thead>
+              <tr style="text-align:left;border-bottom:2px solid var(--crema-dark)">
+                <th style="padding:10px 8px">Fecha</th>
+                <th style="padding:10px 8px">Sucursal</th>
+                <th style="padding:10px 8px">Producto</th>
+                <th style="padding:10px 8px">Tipo</th>
+                <th style="padding:10px 8px">Cantidad</th>
+                <th style="padding:10px 8px">Registrado por</th>
+                <th style="padding:10px 8px">Descripción</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($movimientos_historial as $m): ?>
+                <?php
+                  $tipo_movimiento = $m['tipo'] === 'entrada'
+                    ? 'Entrada'
+                    : ($m['tipo'] === 'salida' ? 'Salida' : ucfirst($m['tipo']));
+
+                  $color_movimiento = $m['tipo'] === 'entrada'
+                    ? '#2E7D32'
+                    : '#C62828';
+                ?>
+                <tr style="border-bottom:1px solid var(--crema-dark)">
+                  <td style="padding:10px 8px;white-space:nowrap;color:var(--gris)">
+                    <?= date('d/m/Y H:i', strtotime($m['created_at'])) ?>
+                  </td>
+                  <td style="padding:10px 8px">
+                    <?= h($m['sucursal_nombre']) ?>
+                  </td>
+                  <td style="padding:10px 8px;font-weight:600">
+                    <?= h($m['producto_nombre']) ?>
+                  </td>
+                  <td style="padding:10px 8px;color:<?= $color_movimiento ?>;font-weight:700">
+                    <?= h($tipo_movimiento) ?>
+                  </td>
+                  <td style="padding:10px 8px;font-weight:700">
+                    <?= (int)$m['cantidad'] ?>
+                  </td>
+                  <td style="padding:10px 8px">
+                    <?= h($m['trabajador_nombre']) ?>
+                  </td>
+                  <td style="padding:10px 8px;color:var(--gris)">
+                    <?= h($m['descripcion'] ?: '—') ?>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+
+      <?php endif; ?>
+    </div>
+
+  <?php endif; ?>
 
   <?php if ($tipo_suc !== 'padre'): ?>
     <div style="background:#FFEBEE;border-left:4px solid var(--rojo);padding:20px 24px;border-radius:var(--radio)">

@@ -300,8 +300,8 @@ $u = usuario_actual();
           };
           return `
         <div class="pago-opt ${g.pagoSel === m ? 'on' : ''}"
-             data-vendedor="${vid}" data-pago="${m}"
-             tabindex="0" role="radio" aria-checked="${g.pagoSel === m}">
+     data-grupo="${clave}" data-pago="${m}"
+     tabindex="0" role="radio" aria-checked="${g.pagoSel === m}">
           <span class="pago-ico">${info.ico}</span> ${info.label}
         </div>`;
         }).join('');
@@ -318,7 +318,7 @@ $u = usuario_actual();
       </div>` : '';
 
         return `
-      <div class="vendor-pago-group" data-vendedor="${vid}">
+      <div class="vendor-pago-group" data-grupo="${clave}">
         <h4 class="vendor-pago-titulo">🏪 ${h(g.nombre)}</h4>
         ${itemsHtml}
         <div class="subtotal-row">

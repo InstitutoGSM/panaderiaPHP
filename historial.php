@@ -184,7 +184,7 @@ $medios_label = [
             <div class="hist-fecha">
               <?= date('d/m/Y H:i', strtotime($ped['created_at'])) ?>
             </div>
-            <div class="hist-ticket"><?= h($ped['ticket_id'] ?? '#' . $ped['id']) ?></div>
+            <div class="hist-ticket">Pedido #<?= (int)$ped['id'] ?></div>
           </div>
           <div class="hist-right">
             <span class="estado-badge estado-<?= $ped['estado'] ?>">
