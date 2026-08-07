@@ -1,316 +1,434 @@
 <?php
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../includes/functions.php';
-header('Content-Type: application/json');
 
-function resp(bool $ok, string $msg = '', array $extra = []): void
+header('Content-Type: application/json; charset=utf-8');
+
+function responder(bool $ok, string $mensaje = '', array $extra = []): void
 {
-  echo json_encode(array_merge(['ok' => $ok, 'msg' => $msg], $extra));
-  exit;
+    echo json_encode(
+        array_merge(
+            [
+                'ok' => $ok,
+                'msg' => $mensaje
+            ],
+            $extra
+        ),
+        JSON_UNESCAPED_UNICODE
+    );
+    exit;
 }
 
-// Solo logueados
-if (!esta_logueado()) resp(false, 'Sesión expirada. Iniciá sesión nuevamente.');
+if (!esta_logueado()) {
+    responder(false, 'Sesión expirada. Iniciá sesión nuevamente.');
+}
 
 $body = json_decode(file_get_contents('php://input'), true);
-if (!$body) resp(false, 'Datos inválidos.');
 
-$uid       = (int)$_SESSION['user_id'];
-$nombre    = trim($body['nombre']       ?? '');
-$email     = trim($body['email']        ?? '');
-$cp        = trim($body['cp']           ?? '') ?: null;
-$direccion = trim($body['direccion']    ?? '') ?: null;
-$notas     = trim($body['notas']        ?? '') ?: null;
-$ultimos4  = trim($body['ultimos4']     ?? '') ?: null;
-$tipo_tarj = trim($body['tipo_tarjeta'] ?? '') ?: null;
-$grupos    = $body['grupos']            ?? [];
-
-if (!$nombre || !$email) resp(false, 'Nombre y email son obligatorios.');
-if (empty($grupos))      resp(false, 'El carrito está vacío.');
-
-$pdo = db();
-
-try {
-  $pdo->beginTransaction();
-
-  $pedidos_creados = [];
-
-  foreach ($grupos as $grupo) {
-    $vid       = (int)($grupo['vendedor_id']  ?? 0);
-    $sucursal_id = (int)($grupo['sucursal_id'] ?? 0) ?: null;
-    $medio     = $grupo['medio_pago'] ?? 'efectivo';
-    $items_grp = $grupo['items']      ?? [];
-
-    if (!$vid || empty($items_grp)) continue;
-
-    // Validar medios permitidos
-    if (!in_array($medio, ['efectivo', 'transferencia', 'debito', 'credito'])) {
-      $medio = 'efectivo';
-    }
-
-    // ── Validar y descontar stock ──────────────────────────────────────
-    foreach ($items_grp as $it) {
-      $pid      = (int)($it['producto_id'] ?? 0);
-      $cantidad = (int)($it['cantidad']    ?? 0);
-      if ($pid <= 0 || $cantidad <= 0) continue;
-
-      // Lock de la fila para evitar race conditions
-      $row = $pdo->prepare("
-    SELECT p.cantidad_disponible, p.precio, p.nombre AS nombre_db
-    FROM productos p
-    INNER JOIN usuarios u ON u.id = p.vendedor_id
-    WHERE p.id = ?
-      AND p.vendedor_id = ?
-      AND p.activo = 1
-      AND u.tipo = 'vendedor'
-      AND u.estado_verificacion = 'aprobado'
-    FOR UPDATE
-");
-      $row->execute([$pid, $vid]);
-      $prod = $row->fetch();
-
-      if (!$prod) {
-        $pdo->rollBack();
-        resp(false, "Producto no encontrado o inactivo (id: $pid).");
-      }
-
-      // Guardar precio real de BD en el item
-      $it['_precio_db'] = (float)$prod['precio'];
-      // Actualizar el array original
-      foreach ($items_grp as &$item_ref) {
-        if ((int)($item_ref['producto_id'] ?? 0) === $pid) {
-          $item_ref['_precio_db'] = (float)$prod['precio'];
-          $item_ref['nombre']     = $prod['nombre_db'];
-        }
-      }
-      unset($item_ref);
-
-      if (
-        $prod['cantidad_disponible'] !== null
-        && $prod['cantidad_disponible'] < $cantidad
-      ) {
-        $pdo->rollBack();
-        resp(false, "Stock insuficiente para \"{$it['nombre']}\". Disponible: {$prod['cantidad_disponible']}.");
-      }
-
-      // Descontar stock
-      $pdo->prepare("
-                UPDATE productos
-                SET cantidad_disponible = cantidad_disponible - ?
-                WHERE id = ? AND vendedor_id = ?
-            ")->execute([$cantidad, $pid, $vid]);
-    }
-
-    // ── Calcular total del grupo ────────────────────────────────────────
-    // Los precios vienen de la BD, no del cliente
-    $total = 0;
-    foreach ($items_grp as $it) {
-      $pid = (int)($it['producto_id'] ?? 0);
-      $cantidad = (int)($it['cantidad'] ?? 0);
-      $precio_db = (float)($it['_precio_db'] ?? 0);
-      $total += $precio_db * $cantidad;
-    }
-
-    // ── Generar ticket_id único ─────────────────────────────────────────
-    $ticket_id = 'TK-' . strtoupper(substr(md5(uniqid('', true)), 0, 5))
-      . '-' . strtoupper(substr(md5(uniqid('', true)), 0, 4));
-
-    // ── Insertar pedido ─────────────────────────────────────────────────
-    $ins = $pdo->prepare("
-            INSERT INTO pedidos
-              (ticket_id, comprador_id, vendedor_id, sucursal_id, total, estado,
-               medio_pago, nombre_comprador, email_comprador,
-               codigo_postal, direccion, notas,
-               tarjeta_ultimos4, tarjeta_tipo, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, NOW())
-        ");
-    $ins->execute([
-      $ticket_id,
-      $uid,
-      $vid,
-      $sucursal_id,
-      $total,
-      'pendiente',
-      $medio,
-      $nombre,
-      $email,
-      $cp,
-      $direccion,
-      $notas,
-      $ultimos4,
-      $tipo_tarj,
-    ]);
-    $pedido_id = (int)$pdo->lastInsertId();
-
-    // ── Insertar items ──────────────────────────────────────────────────
-    $ins_item = $pdo->prepare("
-            INSERT INTO pedido_items
-              (pedido_id, producto_id, nombre, cantidad, precio, variante)
-            VALUES (?,?,?,?,?,?)
-        ");
-    foreach ($items_grp as $it) {
-      $ins_item->execute([
-        $pedido_id,
-        (int)($it['producto_id'] ?? 0),
-        $it['nombre']   ?? '',
-        (int)$it['cantidad'],
-        (float)($it['_precio_db'] ?? $it['precio']),
-        $it['variante'] ?? 'unidad',
-      ]);
-    }
-
-    $pedidos_creados[] = [
-      'pedido_id'  => $pedido_id,
-      'ticket_id'  => $ticket_id,
-      'total'      => $total,
-      'medio_pago' => $medio,
-      'items'      => $items_grp,
-    ];
-  }
-
-  $pdo->commit();
-
-  // ── Generar HTML del ticket (primer pedido) ─────────────────────────────
-  $primer = $pedidos_creados[0] ?? null;
-  $ticket_html = $primer ? generarTicketHTML($primer, $nombre, $email) : null;
-
-  resp(true, '¡Pedido confirmado!', [
-    'pedidos'     => $pedidos_creados,
-    'ticket_html' => $ticket_html,
-  ]);
-} catch (PDOException $e) {
-  $pdo->rollBack();
-  resp(false, 'Error interno al procesar el pedido. Intentá de nuevo.');
+if (!is_array($body)) {
+    responder(false, 'Datos inválidos.');
 }
 
-/* ══ GENERAR TICKET HTML ════════════════════════════════════════════════════ */
-function generarTicketHTML(array $pedido, string $nombre, string $email): string
-{
-  $ticket_id = $pedido['ticket_id'];
-  $fecha     = date('d/m/Y H:i');
-  $total     = number_format($pedido['total'], 0, ',', '.');
+$comprador_id = (int)($_SESSION['user_id'] ?? 0);
+$nombre       = trim($body['nombre'] ?? '');
+$email        = trim($body['email'] ?? '');
+$codigo_postal = trim($body['cp'] ?? '') ?: null;
+$direccion    = trim($body['direccion'] ?? '') ?: null;
+$notas        = trim($body['notas'] ?? '') ?: null;
+$grupos       = $body['grupos'] ?? [];
 
-  $filas = '';
-  foreach ($pedido['items'] as $i) {
-    $subtotal = number_format($i['precio'] * $i['cantidad'], 0, ',', '.');
-    $precio   = number_format($i['precio'], 0, ',', '.');
-    $filas .= "
-        <tr>
-          <td>" . htmlspecialchars($i['nombre']) . "</td>
-          <td style='text-align:center'>" . htmlspecialchars($i['variante'] ?? 'unidad') . "</td>
-          <td style='text-align:center'>{$i['cantidad']}</td>
-          <td style='text-align:right'>\${$precio}</td>
-          <td style='text-align:right'>\${$subtotal}</td>
-        </tr>";
-  }
+if (!$comprador_id) {
+    responder(false, 'Comprador inválido.');
+}
 
-  $medio_label = match ($pedido['medio_pago']) {
-    'efectivo'      => '💵 Efectivo',
-    'transferencia' => '📲 Transferencia',
-    'debito'        => '💳 Débito',
-    'credito'       => '💳 Crédito',
-    default         => $pedido['medio_pago'],
-  };
+if ($nombre === '' || $email === '') {
+    responder(false, 'Nombre y email son obligatorios.');
+}
 
-  return <<<HTML
-<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8">
-  <title>Ticket {$ticket_id}</title>
-  <style>
-    * { box-sizing:border-box; margin:0; padding:0; }
-    body {
-      font-family:'Courier New',monospace;
-      background:#f5f5f5;
-      display:flex; justify-content:center;
-      padding:40px 20px;
+if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+    responder(false, 'El email no es válido.');
+}
+
+if (!is_array($grupos) || empty($grupos)) {
+    responder(false, 'El carrito está vacío.');
+}
+
+$pdo = db();
+$pedidos_creados = [];
+
+try {
+    $pdo->beginTransaction();
+
+    foreach ($grupos as $grupo) {
+        $vendedor_id = (int)($grupo['vendedor_id'] ?? 0);
+        $sucursal_id = (int)($grupo['sucursal_id'] ?? 0);
+        $medio_pago  = $grupo['medio_pago'] ?? 'efectivo';
+        $items       = $grupo['items'] ?? [];
+
+        if (!$vendedor_id || !$sucursal_id || !is_array($items) || empty($items)) {
+            throw new RuntimeException('El grupo del carrito es inválido.');
+        }
+
+        if (!in_array($medio_pago, [
+            'efectivo',
+            'transferencia',
+            'debito',
+            'credito'
+        ], true)) {
+            $medio_pago = 'efectivo';
+        }
+
+        /*
+         * Validar sucursal y obtener el Padre real.
+         *
+         * En una sucursal Padre:
+         *   padre_id IS NULL
+         *   vendedor_id = usuario Padre
+         *
+         * En una sucursal Hija:
+         *   padre_id = usuario Padre
+         *   vendedor_id = usuario Hija
+         */
+        $sucursal_stmt = $pdo->prepare("
+            SELECT
+                s.id,
+                s.vendedor_id,
+                s.padre_id,
+                s.nombre,
+                CASE
+                    WHEN s.padre_id IS NULL THEN s.vendedor_id
+                    ELSE s.padre_id
+                END AS padre_usuario_id
+            FROM sucursales s
+            WHERE s.id = ?
+              AND s.activo = 1
+              AND s.estado = 'activa'
+            LIMIT 1
+            FOR UPDATE
+        ");
+
+        $sucursal_stmt->execute([$sucursal_id]);
+        $sucursal = $sucursal_stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$sucursal) {
+            throw new RuntimeException('La sucursal no está disponible.');
+        }
+
+        $padre_usuario_id = (int)$sucursal['padre_usuario_id'];
+
+        /*
+         * Los productos pertenecen al Padre, no a la Hija.
+         */
+        if ($vendedor_id !== $padre_usuario_id) {
+            throw new RuntimeException('La sucursal no pertenece a esta panadería.');
+        }
+
+        $padre_stmt = $pdo->prepare("
+            SELECT id
+            FROM usuarios
+            WHERE id = ?
+              AND tipo = 'vendedor'
+              AND estado_verificacion = 'aprobado'
+            LIMIT 1
+        ");
+
+        $padre_stmt->execute([$padre_usuario_id]);
+
+        if (!$padre_stmt->fetchColumn()) {
+            throw new RuntimeException('La panadería no está habilitada.');
+        }
+
+        $es_sucursal_padre = empty($sucursal['padre_id']);
+
+        $lineas = [];
+        $total = 0;
+
+        foreach ($items as $item) {
+            $producto_id = (int)($item['producto_id'] ?? 0);
+            $cantidad    = (int)($item['cantidad'] ?? 0);
+            $variante    = $item['variante'] ?? 'unidad';
+
+            if (!$producto_id || $cantidad <= 0) {
+                throw new RuntimeException('Hay un producto inválido en el carrito.');
+            }
+
+            if (!in_array($variante, [
+                'unidad',
+                'media_docena',
+                'docena'
+            ], true)) {
+                $variante = 'unidad';
+            }
+
+            /*
+             * Si todavía no existe el stock de este producto en la
+             * sucursal Padre, lo inicializamos con el stock antiguo.
+             */
+            if ($es_sucursal_padre) {
+                $crear_stock = $pdo->prepare("
+                    INSERT IGNORE INTO stock_sucursal (
+                        producto_id,
+                        sucursal_id,
+                        cantidad_disponible,
+                        stock_minimo,
+                        activo
+                    )
+                    SELECT
+                        p.id,
+                        ?,
+                        COALESCE(p.cantidad_disponible, 0),
+                        0,
+                        p.activo
+                    FROM productos p
+                    WHERE p.id = ?
+                      AND p.vendedor_id = ?
+                ");
+
+                $crear_stock->execute([
+                    $sucursal_id,
+                    $producto_id,
+                    $padre_usuario_id
+                ]);
+            } else {
+                /*
+                 * Para una Hija el stock empieza en cero.
+                 */
+                $crear_stock = $pdo->prepare("
+                    INSERT IGNORE INTO stock_sucursal (
+                        producto_id,
+                        sucursal_id,
+                        cantidad_disponible,
+                        stock_minimo,
+                        activo
+                    )
+                    VALUES (?, ?, 0, 0, 1)
+                ");
+
+                $crear_stock->execute([
+                    $producto_id,
+                    $sucursal_id
+                ]);
+            }
+
+            /*
+             * Producto + herencia + stock.
+             */
+            $producto_stmt = $pdo->prepare("
+                SELECT
+                    p.id,
+                    p.nombre,
+                    p.precio,
+                    p.precio_media_docena,
+                    p.precio_docena,
+                    p.activo,
+                    ss.cantidad_disponible AS stock_actual,
+                    h.id AS herencia_id,
+                    h.aceptado,
+                    h.precio_minimo,
+                    h.precio_sucursal
+                FROM productos p
+                INNER JOIN stock_sucursal ss
+                    ON ss.producto_id = p.id
+                   AND ss.sucursal_id = ?
+                LEFT JOIN herencia_productos h
+                    ON h.producto_id = p.id
+                   AND h.sucursal_id = ?
+                WHERE p.id = ?
+                  AND p.vendedor_id = ?
+                  AND p.activo = 1
+                LIMIT 1
+                FOR UPDATE
+            ");
+
+            $producto_stmt->execute([
+                $sucursal_id,
+                $sucursal_id,
+                $producto_id,
+                $padre_usuario_id
+            ]);
+
+            $producto = $producto_stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$producto) {
+                throw new RuntimeException(
+                    'Producto no encontrado o inactivo.'
+                );
+            }
+
+            /*
+             * Las Hijas solo pueden comprar productos heredados,
+             * aceptados y con precio establecido.
+             */
+            if (!$es_sucursal_padre) {
+                if (
+                    empty($producto['herencia_id']) ||
+                    (int)$producto['aceptado'] !== 1 ||
+                    $producto['precio_sucursal'] === null
+                ) {
+                    throw new RuntimeException(
+                        'Este producto no está habilitado en la sucursal Hija.'
+                    );
+                }
+
+                if (
+                    (float)$producto['precio_sucursal'] <
+                    (float)$producto['precio_minimo']
+                ) {
+                    throw new RuntimeException(
+                        'El precio del producto no respeta el mínimo establecido.'
+                    );
+                }
+            }
+
+            if ((int)$producto['stock_actual'] < $cantidad) {
+                throw new RuntimeException(
+                    'Stock insuficiente para "' .
+                    $producto['nombre'] .
+                    '". Disponible: ' .
+                    $producto['stock_actual']
+                );
+            }
+
+            /*
+             * Precio real tomado desde la BD.
+             * Nunca usamos el precio enviado por JavaScript.
+             */
+            if ($es_sucursal_padre) {
+                if ($variante === 'media_docena' && $producto['precio_media_docena'] !== null) {
+                    $precio_real = (float)$producto['precio_media_docena'];
+                } elseif ($variante === 'docena' && $producto['precio_docena'] !== null) {
+                    $precio_real = (float)$producto['precio_docena'];
+                } else {
+                    $precio_real = (float)$producto['precio'];
+                }
+            } else {
+                /*
+                 * La Hija usa el precio de reventa configurado
+                 * por ella, siempre respetando precio_minimo.
+                 */
+                $precio_real = (float)$producto['precio_sucursal'];
+            }
+
+            if ($precio_real <= 0) {
+                throw new RuntimeException(
+                    'El producto no tiene un precio válido.'
+                );
+            }
+
+            /*
+             * Descontar stock con protección contra cantidades negativas.
+             */
+            $descontar = $pdo->prepare("
+                UPDATE stock_sucursal
+                SET cantidad_disponible = cantidad_disponible - ?
+                WHERE producto_id = ?
+                  AND sucursal_id = ?
+                  AND cantidad_disponible >= ?
+            ");
+
+            $descontar->execute([
+                $cantidad,
+                $producto_id,
+                $sucursal_id,
+                $cantidad
+            ]);
+
+            if ($descontar->rowCount() !== 1) {
+                throw new RuntimeException(
+                    'No se pudo actualizar el stock del producto.'
+                );
+            }
+
+            $subtotal = $precio_real * $cantidad;
+            $total += $subtotal;
+
+            $lineas[] = [
+                'producto_id' => $producto_id,
+                'nombre' => $producto['nombre'],
+                'precio' => $precio_real,
+                'cantidad' => $cantidad,
+                'variante' => $variante
+            ];
+        }
+
+        /*
+         * La estructura real de pedidos no tiene ticket_id,
+         * nombre_comprador ni datos de tarjeta.
+         */
+        $pedido_stmt = $pdo->prepare("
+            INSERT INTO pedidos (
+                comprador_id,
+                vendedor_id,
+                sucursal_id,
+                estado,
+                metodo_pago,
+                total,
+                notas,
+                codigo_postal,
+                direccion,
+                created_at
+            )
+            VALUES (?, ?, ?, 'pendiente', ?, ?, ?, ?, ?, NOW())
+        ");
+
+        $pedido_stmt->execute([
+            $comprador_id,
+            $padre_usuario_id,
+            $sucursal_id,
+            $medio_pago,
+            $total,
+            $notas,
+            $codigo_postal,
+            $direccion
+        ]);
+
+        $pedido_id = (int)$pdo->lastInsertId();
+
+        $item_stmt = $pdo->prepare("
+            INSERT INTO pedido_items (
+                pedido_id,
+                producto_id,
+                nombre_producto,
+                precio_unitario,
+                cantidad
+            )
+            VALUES (?, ?, ?, ?, ?)
+        ");
+
+        foreach ($lineas as $linea) {
+            $item_stmt->execute([
+                $pedido_id,
+                $linea['producto_id'],
+                $linea['nombre'],
+                $linea['precio'],
+                $linea['cantidad']
+            ]);
+        }
+
+        $pedidos_creados[] = [
+            'pedido_id' => $pedido_id,
+            'sucursal_id' => $sucursal_id,
+            'total' => $total,
+            'medio_pago' => $medio_pago,
+            'items' => $lineas
+        ];
     }
-    .ticket {
-      background:white; width:100%; max-width:480px;
-      padding:36px 32px; border-radius:12px;
-      box-shadow:0 4px 24px rgba(0,0,0,0.1);
+
+    if (empty($pedidos_creados)) {
+        throw new RuntimeException('No hay pedidos válidos para crear.');
     }
-    .ticket-header { text-align:center; margin-bottom:24px; }
-    .ticket-logo   { font-size:2.5rem; margin-bottom:6px; }
-    .ticket-marca  { font-size:1.4rem; font-weight:900; color:#C8601A; letter-spacing:.1em; }
-    .ticket-sub    { font-size:.8rem; color:#7A6A5A; margin-top:2px; }
-    .divider { border:none; border-top:2px dashed #EDD9B8; margin:18px 0; }
-    .ticket-id {
-      text-align:center; font-size:1.1rem; font-weight:900; color:#3B1A0A;
-      background:#F5ECD7; padding:10px; border-radius:8px;
-      margin-bottom:18px; letter-spacing:.15em;
+
+    $pdo->commit();
+
+    responder(true, '¡Pedido confirmado!', [
+        'pedidos' => $pedidos_creados,
+        'ticket_html' => null
+    ]);
+
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
     }
-    .info-row { display:flex; justify-content:space-between; font-size:.82rem; margin-bottom:6px; }
-    .info-label { color:#7A6A5A; }
-    .info-val   { font-weight:700; color:#3B1A0A; }
-    table { width:100%; border-collapse:collapse; font-size:.82rem; margin-top:8px; }
-    th { background:#3B1A0A; color:white; padding:8px 6px; text-align:left; font-size:.75rem; }
-    td { padding:7px 6px; border-bottom:1px solid #F5ECD7; }
-    tr:last-child td { border-bottom:none; }
-    .total-row {
-      display:flex; justify-content:space-between; align-items:center;
-      margin-top:16px; padding-top:16px; border-top:2px solid #3B1A0A;
-    }
-    .total-label { font-size:1rem; font-weight:700; }
-    .total-val   { font-size:1.5rem; font-weight:900; color:#2D7A4F; }
-    .ticket-footer {
-      text-align:center; margin-top:24px;
-      font-size:.75rem; color:#7A6A5A; line-height:1.6;
-    }
-    .btn-print {
-      display:block; width:100%; margin-top:24px; padding:13px;
-      background:#C8601A; color:white; border:none; border-radius:8px;
-      font-size:1rem; font-weight:700; cursor:pointer; letter-spacing:.04em;
-    }
-    @media print { .btn-print { display:none; } }
-  </style>
-</head>
-<body>
-<div class="ticket">
-  <div class="ticket-header">
-    <div class="ticket-logo">🥖</div>
-    <div class="ticket-marca">PANADERIA PUMA</div>
-    <div class="ticket-sub">Comprobante de pedido</div>
-  </div>
 
-  <div class="ticket-id">{$ticket_id}</div>
-  <hr class="divider">
-
-  <div class="info-row"><span class="info-label">Fecha</span><span class="info-val">{$fecha}</span></div>
-  <div class="info-row"><span class="info-label">Comprador</span><span class="info-val">{$nombre}</span></div>
-  <div class="info-row"><span class="info-label">Email</span><span class="info-val">{$email}</span></div>
-  <div class="info-row"><span class="info-label">Pago</span><span class="info-val">{$medio_label}</span></div>
-  <div class="info-row"><span class="info-label">Estado</span><span class="info-val">⏳ Pendiente</span></div>
-
-  <hr class="divider">
-
-  <table>
-    <thead>
-      <tr>
-        <th>Producto</th><th style='text-align:center'>Var.</th>
-        <th style='text-align:center'>Cant.</th>
-        <th style='text-align:right'>P/u</th>
-        <th style='text-align:right'>Total</th>
-      </tr>
-    </thead>
-    <tbody>{$filas}</tbody>
-  </table>
-
-  <div class="total-row">
-    <span class="total-label">TOTAL</span>
-    <span class="total-val">\${$total}</span>
-  </div>
-
-  <div class="ticket-footer">
-    Gracias por tu compra 🥖<br>
-    PanaderiaMarket — Catamarca, Argentina<br>
-    soporte-lospuma@gmail.com
-  </div>
-
-  <button class="btn-print" onclick="window.print()">🖨️ Imprimir comprobante</button>
-</div>
-</body>
-</html>
-HTML;
+    responder(false, $e->getMessage());
 }

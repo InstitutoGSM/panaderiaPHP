@@ -4,7 +4,10 @@ require_once __DIR__ . '/includes/functions.php';
 
 // ── Parámetro ─────────────────────────────────────────────────────────────
 $id = (int)($_GET['id'] ?? 0);
-if (!$id) { header('Location: ' . SITE_URL . '/catalogo.php'); exit; }
+if (!$id) {
+  header('Location: ' . SITE_URL . '/catalogo.php');
+  exit;
+}
 
 // ── Datos de la sucursal ──────────────────────────────────────────────────
 $stmt = db()->prepare("
@@ -19,7 +22,10 @@ $stmt = db()->prepare("
 ");
 $stmt->execute([$id]);
 $suc = $stmt->fetch();
-if (!$suc) { header('Location: ' . SITE_URL . '/catalogo.php'); exit; }
+if (!$suc) {
+  header('Location: ' . SITE_URL . '/catalogo.php');
+  exit;
+}
 
 // ── Panadería padre ───────────────────────────────────────────────────────
 $stmt2 = db()->prepare("
@@ -29,17 +35,80 @@ $stmt2 = db()->prepare("
 ");
 $stmt2->execute([$suc['vendedor_id']]);
 $padre = $stmt2->fetch();
-if (!$padre) { header('Location: ' . SITE_URL . '/catalogo.php'); exit; }
+if (!$padre) {
+  header('Location: ' . SITE_URL . '/catalogo.php');
+  exit;
+}
 
 $nombre_padre = $padre['nombre_panaderia'] ?: $padre['nombre'];
 
-// ── Productos del padre (la sucursal comparte el catálogo) ────────────────
-$prods = db()->prepare("
-    SELECT * FROM productos
-    WHERE  vendedor_id = ? AND activo = 1
-    ORDER  BY created_at DESC
+/*
+ * En una sucursal Padre:
+ *   el dueño es vendedor_id
+ *
+ * En una sucursal Hija:
+ *   el dueño real de los productos es padre_id
+ */
+$padre_id = (int)($suc['padre_id'] ?: $suc['vendedor_id']);
+
+$stmt2 = db()->prepare("
+    SELECT
+        id,
+        nombre,
+        nombre_panaderia,
+        avatar_url,
+        telefono,
+        descripcion
+    FROM usuarios
+    WHERE id = ?
+      AND tipo = 'vendedor'
+      AND estado_verificacion = 'aprobado'
+    LIMIT 1
 ");
-$prods->execute([$suc['vendedor_id']]);
+
+$stmt2->execute([$padre_id]);
+$padre = $stmt2->fetch();
+
+if (!$padre) {
+  header('Location: ' . SITE_URL . '/catalogo.php');
+  exit;
+}
+
+$nombre_padre = $padre['nombre_panaderia'] ?: $padre['nombre'];
+
+$prods = db()->prepare("
+    SELECT
+        p.*,
+        ss.cantidad_disponible AS stock_sucursal,
+        CASE
+            WHEN s.padre_id IS NULL THEN p.precio
+            ELSE h.precio_sucursal
+        END AS precio_mostrar
+    FROM productos p
+    INNER JOIN sucursales s
+        ON s.id = ?
+    INNER JOIN stock_sucursal ss
+        ON ss.producto_id = p.id
+       AND ss.sucursal_id = s.id
+       AND ss.activo = 1
+    LEFT JOIN herencia_productos h
+        ON h.producto_id = p.id
+       AND h.sucursal_id = s.id
+       AND h.aceptado = 1
+    WHERE p.vendedor_id = ?
+      AND p.activo = 1
+      AND (
+          s.padre_id IS NULL
+          OR h.id IS NOT NULL
+      )
+    ORDER BY p.created_at DESC
+");
+
+$prods->execute([
+  $id,
+  $padre_id
+]);
+
 $productos = $prods->fetchAll();
 
 $page_title = h($suc['nombre']);
@@ -72,7 +141,7 @@ include __DIR__ . '/includes/header.php';
     <div style="width:72px;height:72px;border-radius:50%;background:var(--marron);
                 display:flex;align-items:center;justify-content:center;
                 font-weight:700;font-size:1.4rem;color:white;flex-shrink:0;
-                <?= !empty($padre['avatar_url']) ? "background:url('".$padre['avatar_url']."') center/cover;" : '' ?>">
+                <?= !empty($padre['avatar_url']) ? "background:url('" . $padre['avatar_url'] . "') center/cover;" : '' ?>">
       <?= empty($padre['avatar_url']) ? iniciales($nombre_padre) : '' ?>
     </div>
 
@@ -80,7 +149,7 @@ include __DIR__ . '/includes/header.php';
     <div style="flex:1;min-width:200px">
       <p style="margin:0 0 6px;font-size:0.78rem;color:var(--gris)">Sucursal de</p>
       <a href="catalogo.php?vendedor=<?= $padre['id'] ?>"
-         style="font-family:'Playfair Display',serif;font-size:1.2rem;
+        style="font-family:'Playfair Display',serif;font-size:1.2rem;
                 font-weight:700;color:var(--marron);text-decoration:none">
         🏪 <?= h($nombre_padre) ?>
       </a>
@@ -103,7 +172,7 @@ include __DIR__ . '/includes/header.php';
 
     <!-- Botón ver panadería padre -->
     <a href="catalogo.php?vendedor=<?= $padre['id'] ?>"
-       class="btn btn-naranja btn-sm" style="align-self:center">
+      class="btn btn-naranja btn-sm" style="align-self:center">
       Ver todos los productos
     </a>
   </div>
@@ -125,17 +194,17 @@ include __DIR__ . '/includes/header.php';
   <?php else: ?>
     <div class="grid-productos" id="productos-grid">
       <?php foreach ($productos as $prod):
-        $sin_stock = ($prod['cantidad_disponible'] !== null && (int)$prod['cantidad_disponible'] === 0);
+        $sin_stock = (int)$prod['stock_sucursal'] <= 0;
       ?>
         <div class="card"
-             data-nombre="<?= h(strtolower($prod['nombre'])) ?>"
-             data-pan="<?= h(strtolower($nombre_padre)) ?>">
+          data-nombre="<?= h(strtolower($prod['nombre'])) ?>"
+          data-pan="<?= h(strtolower($nombre_padre)) ?>">
           <span class="card-cat"><?= cat_label($prod['categoria']) ?></span>
 
           <?php if (!empty($prod['imagen_url'])): ?>
             <img src="<?= h($prod['imagen_url']) ?>"
-                 class="card-img" alt="<?= h($prod['nombre']) ?>"
-                 loading="lazy">
+              class="card-img" alt="<?= h($prod['nombre']) ?>"
+              loading="lazy">
           <?php else: ?>
             <div class="card-img-ph"><?= cat_emoji($prod['categoria']) ?></div>
           <?php endif; ?>
@@ -143,7 +212,7 @@ include __DIR__ . '/includes/header.php';
           <div class="card-body">
             <span class="card-tienda">
               <a href="sucursal.php?id=<?= $suc['id'] ?>"
-                 style="color:var(--naranja)">
+                style="color:var(--naranja)">
                 🏬 <?= h($suc['nombre']) ?>
               </a>
             </span>
@@ -152,17 +221,18 @@ include __DIR__ . '/includes/header.php';
               <p class="card-desc"><?= h($prod['descripcion']) ?></p>
             <?php endif; ?>
             <div class="card-footer">
-              <span class="card-precio">$<?= number_format($prod['precio'], 2) ?></span>
+              <span class="card-precio">$<?= number_format($prod['precio_mostrar'], 2) ?></span>
               <?php if ($sin_stock): ?>
                 <span style="font-size:0.75rem;color:var(--gris)">Sin stock</span>
               <?php else: ?>
                 <button class="btn btn-naranja btn-sm btn-agregar"
-                        data-id="<?= $prod['id'] ?>"
-                        data-nombre="<?= h($prod['nombre']) ?>"
-                        data-precio="<?= $prod['precio'] ?>"
-                        data-panaderia="<?= h($nombre_padre) ?>"
-                        data-vendedor="<?= $padre['id'] ?>"
-                        data-imagen="<?= h($prod['imagen_url'] ?? '') ?>">
+                  data-id="<?= $prod['id'] ?>"
+                  data-nombre="<?= h($prod['nombre']) ?>"
+                  data-precio="<?= $prod['precio_mostrar'] ?>"
+                  data-sucursal="<?= (int)$suc['id'] ?>"
+                  data-panaderia="<?= h($nombre_padre) ?>"
+                  data-vendedor="<?= $padre['id'] ?>"
+                  data-imagen="<?= h($prod['imagen_url'] ?? '') ?>">
                   + Agregar
                 </button>
               <?php endif; ?>
@@ -177,17 +247,18 @@ include __DIR__ . '/includes/header.php';
 <?php include __DIR__ . '/includes/footer.php'; ?>
 
 <script>
-document.querySelectorAll('.btn-agregar').forEach(btn => {
-  btn.addEventListener('click', e => {
-    e.preventDefault();
-    agregarItem({
-      id:          +btn.dataset.id,
-      nombre:      btn.dataset.nombre,
-      precio:      +btn.dataset.precio,
-      panaderia:   btn.dataset.panaderia,
-      vendedor_id: +btn.dataset.vendedor,
-      imagen_url:  btn.dataset.imagen,
+  document.querySelectorAll('.btn-agregar').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      agregarItem({
+        id: +btn.dataset.id,
+        nombre: btn.dataset.nombre,
+        precio: +btn.dataset.precio,
+        panaderia: btn.dataset.panaderia,
+        vendedor_id: +btn.dataset.vendedor,
+        imagen_url: btn.dataset.imagen,
+        sucursal_id: +btn.dataset.sucursal
+      });
     });
   });
-});
 </script>

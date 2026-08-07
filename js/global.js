@@ -16,9 +16,26 @@ function actualizarBadge() {
 }
 function agregarItem(prod) {
   const c = getCarrito();
-  const idx = c.findIndex(i => i.id === prod.id);
-  if (idx >= 0) c[idx].cantidad += 1;
-  else c.push({ ...prod, cantidad: 1 });
+
+  const productoId = Number(prod.id);
+  const sucursalId = Number(prod.sucursal_id || 0);
+
+  const idx = c.findIndex(item =>
+    Number(item.id) === productoId &&
+    Number(item.sucursal_id || 0) === sucursalId
+  );
+
+  if (idx >= 0) {
+    c[idx].cantidad += 1;
+  } else {
+    c.push({
+      ...prod,
+      id: productoId,
+      sucursal_id: sucursalId,
+      cantidad: 1
+    });
+  }
+
   setCarrito(c);
   toast('Agregado al carrito 🛒', 'ok');
 }
