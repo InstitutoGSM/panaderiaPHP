@@ -36,7 +36,8 @@ try {
   $pedidos_creados = [];
 
   foreach ($grupos as $grupo) {
-    $vid       = (int)($grupo['vendedor_id'] ?? 0);
+    $vid       = (int)($grupo['vendedor_id']  ?? 0);
+    $sucursal_id = (int)($grupo['sucursal_id'] ?? 0) ?: null;
     $medio     = $grupo['medio_pago'] ?? 'efectivo';
     $items_grp = $grupo['items']      ?? [];
 
@@ -55,7 +56,7 @@ try {
 
       // Lock de la fila para evitar race conditions
       $row = $pdo->prepare("
-    SELECT p.cantidad_disponible
+    SELECT p.cantidad_disponible, p.precio, p.nombre AS nombre_db
     FROM productos p
     INNER JOIN usuarios u ON u.id = p.vendedor_id
     WHERE p.id = ?
@@ -72,6 +73,17 @@ try {
         $pdo->rollBack();
         resp(false, "Producto no encontrado o inactivo (id: $pid).");
       }
+
+      // Guardar precio real de BD en el item
+      $it['_precio_db'] = (float)$prod['precio'];
+      // Actualizar el array original
+      foreach ($items_grp as &$item_ref) {
+        if ((int)($item_ref['producto_id'] ?? 0) === $pid) {
+          $item_ref['_precio_db'] = (float)$prod['precio'];
+          $item_ref['nombre']     = $prod['nombre_db'];
+        }
+      }
+      unset($item_ref);
 
       if (
         $prod['cantidad_disponible'] !== null
@@ -90,7 +102,14 @@ try {
     }
 
     // ── Calcular total del grupo ────────────────────────────────────────
-    $total = array_sum(array_map(fn($i) => $i['precio'] * $i['cantidad'], $items_grp));
+    // Los precios vienen de la BD, no del cliente
+    $total = 0;
+    foreach ($items_grp as $it) {
+      $pid = (int)($it['producto_id'] ?? 0);
+      $cantidad = (int)($it['cantidad'] ?? 0);
+      $precio_db = (float)($it['_precio_db'] ?? 0);
+      $total += $precio_db * $cantidad;
+    }
 
     // ── Generar ticket_id único ─────────────────────────────────────────
     $ticket_id = 'TK-' . strtoupper(substr(md5(uniqid('', true)), 0, 5))
@@ -99,16 +118,17 @@ try {
     // ── Insertar pedido ─────────────────────────────────────────────────
     $ins = $pdo->prepare("
             INSERT INTO pedidos
-              (ticket_id, comprador_id, vendedor_id, total, estado,
+              (ticket_id, comprador_id, vendedor_id, sucursal_id, total, estado,
                medio_pago, nombre_comprador, email_comprador,
                codigo_postal, direccion, notas,
                tarjeta_ultimos4, tarjeta_tipo, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, NOW())
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, NOW())
         ");
     $ins->execute([
       $ticket_id,
       $uid,
       $vid,
+      $sucursal_id,
       $total,
       'pendiente',
       $medio,
@@ -134,7 +154,7 @@ try {
         (int)($it['producto_id'] ?? 0),
         $it['nombre']   ?? '',
         (int)$it['cantidad'],
-        (float)$it['precio'],
+        (float)($it['_precio_db'] ?? $it['precio']),
         $it['variante'] ?? 'unidad',
       ]);
     }
