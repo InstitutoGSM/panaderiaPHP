@@ -36,7 +36,12 @@ $ordenes = [
 $order_sql = $ordenes[$orden] ?? 'p.created_at DESC';
 
 // ── Consulta de productos ────────────────────────────────────────────────
-$where  = ['p.activo = 1', "u.estado_verificacion = 'aprobado'", "u.tipo = 'vendedor'", 'p.cantidad_disponible > 0'];
+$where  = [
+  'p.activo = 1',
+  "u.estado_verificacion = 'aprobado'",
+  "u.tipo = 'vendedor'",
+  'COALESCE(ss.cantidad_disponible, p.cantidad_disponible) > 0'
+];
 $params = [];
 
 if ($cat !== 'todos') {
@@ -54,16 +59,32 @@ if ($vendedor > 0) {
 }
 
 $sql = "
-    SELECT p.*,
-           u.nombre_panaderia, u.nombre AS nombre_vendedor,
-           u.id AS uid,
-           COALESCE(AVG(c.estrellas), 0) AS promedio,
-           COUNT(DISTINCT c.id)           AS total_votos
-    FROM   productos p
-    JOIN   usuarios  u ON u.id = p.vendedor_id
-    LEFT JOIN calificaciones c ON c.producto_id = p.id
-    WHERE  " . implode(' AND ', $where) . "
-    GROUP BY p.id
+    SELECT
+      p.*,
+      u.nombre_panaderia,
+      u.nombre AS nombre_vendedor,
+      u.id AS uid,
+      s.id AS sucursal_id,
+      s.nombre AS sucursal_nombre,
+      COALESCE(ss.cantidad_disponible, p.cantidad_disponible) AS stock_real,
+      COALESCE(AVG(c.estrellas), 0) AS promedio,
+      COUNT(DISTINCT c.id) AS total_votos
+    FROM productos p
+    JOIN usuarios u
+      ON u.id = p.vendedor_id
+    JOIN sucursales s
+      ON s.vendedor_id = p.vendedor_id
+     AND s.padre_id IS NULL
+     AND s.activo = 1
+     AND s.estado = 'activa'
+    LEFT JOIN stock_sucursal ss
+      ON ss.producto_id = p.id
+     AND ss.sucursal_id = s.id
+     AND ss.activo = 1
+    LEFT JOIN calificaciones c
+      ON c.producto_id = p.id
+    WHERE " . implode(' AND ', $where) . "
+    GROUP BY p.id, s.id, ss.cantidad_disponible
     ORDER BY $order_sql
 ";
 
@@ -196,9 +217,9 @@ include __DIR__ . '/includes/header.php';
               <?php foreach ($suc_pan as $s): ?>
                 <div style="font-size:0.78rem;color:var(--gris);padding:4px 0;line-height:1.4">
                   <a href="sucursal.php?id=<?= $s['id'] ?>"
-   style="color:var(--marron);text-decoration:none;font-weight:700">
-  🏬 <?= h($s['nombre']) ?>
-</a>
+                    style="color:var(--marron);text-decoration:none;font-weight:700">
+                    🏬 <?= h($s['nombre']) ?>
+                  </a>
                   <?= !empty($s['direccion']) ? '<br><span style="padding-left:14px">📍 ' . h($s['direccion']) . '</span>' : '' ?>
                   <?= !empty($s['telefono'])  ? '<br><span style="padding-left:14px">📞 ' . h($s['telefono']) . '</span>'  : '' ?>
                 </div>
@@ -216,16 +237,14 @@ include __DIR__ . '/includes/header.php';
         <!-- filtros -->
         <a
           href="catalogo.php?cat=todos&q=<?= urlencode($q) ?>&orden=<?= h($orden) ?><?= $vendedor ? '&vendedor=' . $vendedor : '' ?>"
-          class="filtro <?= $cat === 'todos' ? 'on' : '' ?>"
-        >
+          class="filtro <?= $cat === 'todos' ? 'on' : '' ?>">
           Todas
         </a>
 
         <?php foreach ($categorias_catalogo as $categoria): ?>
           <a
             href="catalogo.php?cat=<?= urlencode($categoria['slug']) ?>&q=<?= urlencode($q) ?>&orden=<?= h($orden) ?><?= $vendedor ? '&vendedor=' . $vendedor : '' ?>"
-            class="filtro <?= $cat === $categoria['slug'] ? 'on' : '' ?>"
-          >
+            class="filtro <?= $cat === $categoria['slug'] ? 'on' : '' ?>">
             <?= h($categoria['emoji']) ?>
             <?= h($categoria['nombre']) ?>
           </a>
@@ -244,10 +263,10 @@ include __DIR__ . '/includes/header.php';
               <div style="background:var(--crema);border-radius:var(--radio);
                           padding:10px 14px;font-size:0.83rem;min-width:180px">
                 <a href="sucursal.php?id=<?= $s['id'] ?>"
-   style="display:block;margin-bottom:4px;color:var(--marron);
+                  style="display:block;margin-bottom:4px;color:var(--marron);
           text-decoration:none;font-weight:700">
-  <?= h($s['nombre']) ?>
-</a>
+                  <?= h($s['nombre']) ?>
+                </a>
                 <?php if (!empty($s['direccion'])): ?>
                   <span style="color:var(--gris)">📍 <?= h($s['direccion']) ?></span><br>
                 <?php endif; ?>
@@ -322,6 +341,10 @@ include __DIR__ . '/includes/header.php';
                 <?php endif; ?>
 
                 <div class="card-precio"><?= precio((float)$prod['precio']) ?></div>
+                <div style="font-size:.78rem;color:var(--gris);margin:4px 0 8px">
+                  Stock disponible: <?= (int)$prod['stock_real'] ?>
+                  · <?= h($prod['sucursal_nombre']) ?>
+                </div>
 
                 <div style="display:flex;gap:8px">
                   <a href="producto.php?id=<?= $prod['id'] ?>"
@@ -334,6 +357,8 @@ include __DIR__ . '/includes/header.php';
                     data-precio="<?= $prod['precio'] ?>"
                     data-panaderia="<?= h($pan_nombre) ?>"
                     data-vendedor="<?= $prod['uid'] ?>"
+                    data-sucursal="<?= (int)$prod['sucursal_id'] ?>"
+                    data-stock="<?= (int)$prod['stock_real'] ?>"
                     data-imagen="<?= h($prod['imagen_url'] ?? '') ?>">
                     + Agregar
                   </button>
@@ -374,6 +399,7 @@ include __DIR__ . '/includes/header.php';
         precio: +btn.dataset.precio,
         panaderia: btn.dataset.panaderia,
         vendedor_id: +btn.dataset.vendedor,
+        sucursal_id: +btn.dataset.sucursal,
         imagen_url: btn.dataset.imagen,
       });
     });

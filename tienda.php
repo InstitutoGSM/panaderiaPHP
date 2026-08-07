@@ -26,12 +26,33 @@ if (!$v || $v['estado_verificacion'] !== 'aprobado') {
 
 // ── Productos activos del vendedor ────────────────────────────────────────
 $prod_stmt = db()->prepare("
-    SELECT id, nombre, descripcion, categoria, precio,
-           precio_media_docena, precio_docena,
-           imagen_url, unidad_venta, cantidad_disponible
-    FROM   productos
-    WHERE  vendedor_id = ? AND activo = 1 AND cantidad_disponible > 0
-    ORDER  BY created_at DESC
+    SELECT
+      p.id,
+      p.nombre,
+      p.descripcion,
+      p.categoria,
+      p.precio,
+      p.precio_media_docena,
+      p.precio_docena,
+      p.imagen_url,
+      p.unidad_venta,
+      COALESCE(ss.cantidad_disponible, p.cantidad_disponible) AS cantidad_disponible,
+      s.id AS sucursal_id,
+      s.nombre AS sucursal_nombre
+    FROM productos p
+    INNER JOIN sucursales s
+      ON s.vendedor_id = p.vendedor_id
+     AND s.padre_id IS NULL
+     AND s.activo = 1
+     AND s.estado = 'activa'
+    LEFT JOIN stock_sucursal ss
+      ON ss.producto_id = p.id
+     AND ss.sucursal_id = s.id
+     AND ss.activo = 1
+    WHERE p.vendedor_id = ?
+      AND p.activo = 1
+      AND COALESCE(ss.cantidad_disponible, p.cantidad_disponible) > 0
+    ORDER BY p.created_at DESC
 ");
 $prod_stmt->execute([$vid]);
 $productos = $prod_stmt->fetchAll();
@@ -260,6 +281,9 @@ $page_title = h($nombre_pan);
             : ''}
           <div class="card-footer">
             <span class="card-precio">${formatPrecio(p.precio)}</span>
+            <span style="font-size:.75rem;color:var(--gris)">
+              Stock: ${p.cantidad_disponible}
+              </span>
             <div style="display:flex;gap:6px">
               <a href="${SITE_URL}/producto.php?id=${p.id}"
                  class="btn btn-ghost btn-sm"

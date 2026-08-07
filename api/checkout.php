@@ -339,6 +339,33 @@ try {
         );
       }
 
+      /*
+        * Registrar la salida generada por la venta.
+        * Se usa el usuario Padre como vendedor y responsable
+        * porque movimientos exige trabajador_id.
+        */
+      $movimiento_venta = $pdo->prepare("
+         INSERT INTO movimientos (
+           tipo,
+           producto_id,
+           cantidad,
+           descripcion,
+           trabajador_id,
+           vendedor_id,
+           sucursal_id
+         )
+         VALUES ('salida', ?, ?, ?, ?, ?, ?)
+       ");
+
+      $movimiento_venta->execute([
+        $producto_id,
+        $cantidad,
+        'Venta por checkout - variante: ' . $variante,
+        $padre_usuario_id,
+        $padre_usuario_id,
+        $sucursal_id
+      ]);
+
       $subtotal = $precio_real * $cantidad;
       $total += $subtotal;
 
