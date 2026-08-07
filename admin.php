@@ -77,7 +77,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $sol = $pdo->prepare("SELECT * FROM solicitudes_padre WHERE id = ? AND estado = 'pendiente' LIMIT 1");
       $sol->execute([$sid]);
       $s = $sol->fetch();
-      if (!$s) { echo json_encode(['ok'=>false,'msg'=>'Solicitud no encontrada']); exit; }
+      if (!$s) {
+        echo json_encode(['ok' => false, 'msg' => 'Solicitud no encontrada']);
+        exit;
+      }
       $v_id = (int)$s['vendedor_id'];
       $pdo->beginTransaction();
       $pdo->prepare("UPDATE usuarios SET is_admin_pan=1, puede_ser_admin=1, tipo_sucursal='padre', sucursal_padre_id=NULL WHERE id=? AND tipo='vendedor'")->execute([$v_id]);
@@ -92,10 +95,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       }
       $pdo->prepare("UPDATE solicitudes_padre SET estado='aprobada', updated_at=NOW() WHERE id=?")->execute([$sid]);
       $pdo->commit();
-      echo json_encode(['ok'=>true,'msg'=>'Vendedor convertido en Encargado Padre ✅']);
+      echo json_encode(['ok' => true, 'msg' => 'Vendedor convertido en Encargado Padre ✅']);
     } catch (Exception $e) {
       $pdo->rollBack();
-      echo json_encode(['ok'=>false,'msg'=>'Error: '.$e->getMessage()]);
+      echo json_encode(['ok' => false, 'msg' => 'Error: ' . $e->getMessage()]);
     }
     exit;
   }
@@ -103,9 +106,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   if ($accion === 'rechazar_solicitud_padre') {
     $sid    = (int)($_POST['sol_id'] ?? 0);
     $motivo = trim($_POST['motivo'] ?? '');
-    if (!$sid) { echo json_encode(['ok'=>false,'msg'=>'ID inválido']); exit; }
+    if (!$sid) {
+      echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
+      exit;
+    }
     db()->prepare("UPDATE solicitudes_padre SET estado='rechazada', motivo_rechazo=?, updated_at=NOW() WHERE id=? AND estado='pendiente'")->execute([$motivo ?: null, $sid]);
-    echo json_encode(['ok'=>true,'msg'=>'Solicitud rechazada.']);
+    echo json_encode(['ok' => true, 'msg' => 'Solicitud rechazada.']);
     exit;
   }
 
@@ -616,6 +622,134 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
       break;
 
+    // ── Crear categoría ───────────────────────────────────────────────
+    case 'crear_categoria':
+      $nombre = trim($_POST['nombre'] ?? '');
+      $emoji  = trim($_POST['emoji'] ?? '') ?: '🥖';
+
+      if ($nombre === '') {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'El nombre de la categoría es obligatorio.'
+        ]);
+        exit;
+      }
+
+      if (mb_strlen($nombre) > 150) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'El nombre de la categoría es demasiado largo.'
+        ]);
+        exit;
+      }
+
+      /*
+       * El slug se genera automáticamente.
+       * No se modifica ninguna categoría ni producto existente.
+       */
+      $slug = mb_strtolower($nombre, 'UTF-8');
+
+      if (function_exists('iconv')) {
+        $slug_convertido = iconv(
+          'UTF-8',
+          'ASCII//TRANSLIT//IGNORE',
+          $slug
+        );
+
+        if ($slug_convertido !== false) {
+          $slug = $slug_convertido;
+        }
+      }
+
+      $slug = preg_replace('/[^a-z0-9]+/', '-', $slug);
+      $slug = trim($slug, '-');
+
+      if ($slug === '') {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'No se pudo generar un identificador válido.'
+        ]);
+        exit;
+      }
+
+      $pdo = db();
+
+      $buscar_categoria = $pdo->prepare("
+        SELECT id
+        FROM categorias
+        WHERE slug = ?
+        LIMIT 1
+      ");
+      $buscar_categoria->execute([$slug]);
+
+      if ($buscar_categoria->fetch()) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'Ya existe una categoría con ese nombre.'
+        ]);
+        exit;
+      }
+
+      try {
+        $crear_categoria = $pdo->prepare("
+          INSERT INTO categorias
+            (slug, nombre, emoji, activo)
+          VALUES (?, ?, ?, 1)
+        ");
+
+        $crear_categoria->execute([
+          $slug,
+          $nombre,
+          mb_substr($emoji, 0, 20)
+        ]);
+
+        echo json_encode([
+          'ok' => true,
+          'msg' => 'Categoría creada correctamente.'
+        ]);
+      } catch (Throwable $e) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'No se pudo crear la categoría.'
+        ]);
+      }
+      break;
+
+
+    // ── Activar/desactivar categoría sin eliminarla ───────────────────
+    case 'alternar_categoria':
+      $categoria_id = (int)($_POST['categoria_id'] ?? 0);
+
+      if ($categoria_id <= 0) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'Categoría inválida.'
+        ]);
+        exit;
+      }
+
+      $actualizar_categoria = db()->prepare("
+        UPDATE categorias
+        SET activo = IF(activo = 1, 0, 1)
+        WHERE id = ?
+      ");
+      $actualizar_categoria->execute([$categoria_id]);
+
+      if ($actualizar_categoria->rowCount() < 1) {
+        echo json_encode([
+          'ok' => false,
+          'msg' => 'Categoría no encontrada.'
+        ]);
+        exit;
+      }
+
+      echo json_encode([
+        'ok' => true,
+        'msg' => 'Estado de la categoría actualizado.'
+      ]);
+      break;
+
+
     default:
       echo json_encode(['ok' => false, 'msg' => 'Acción desconocida']);
   }
@@ -667,7 +801,8 @@ try {
     WHERE sp.estado = 'pendiente'
     ORDER BY sp.created_at ASC
   ")->fetchAll();
-} catch (Exception $e) {}
+} catch (Exception $e) {
+}
 
 // Solicitudes para ser Padre
 $solicitudes_padre = [];
@@ -681,6 +816,19 @@ try {
   ")->fetchAll();
 } catch (Exception $e) {
 }
+
+// Categorías administrables por el Admin global
+$categorias_admin = [];
+
+try {
+  $categorias_admin = db()->query("
+    SELECT id, slug, nombre, emoji, activo, created_at
+    FROM categorias
+    ORDER BY activo DESC, nombre ASC
+  ")->fetchAll();
+} catch (Exception $e) {
+  $categorias_admin = [];
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -688,6 +836,7 @@ try {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="<?= h(csrf_token()) ?>">
   <title>Panel Admin — <?= SITE_NAME ?></title>
   <link rel="stylesheet" href="<?= SITE_URL ?>/css/global.css">
   <link rel="stylesheet" href="<?= SITE_URL ?>/css/admin.css">
@@ -996,6 +1145,10 @@ try {
           </span>
         <?php endif; ?>
       </button>
+
+      <button class="admin-tab" onclick="cambiarTab('tab-categorias', this)">
+        🏷️ Categorías
+      </button>
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
@@ -1177,6 +1330,155 @@ try {
           </div>
         <?php endforeach; ?>
       <?php endif; ?>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- CATEGORÍAS                                                        -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="tab-categorias" class="tab-panel">
+
+      <div style="margin-bottom:20px">
+        <h2 style="font-family:'Playfair Display',serif;font-size:1.1rem;margin:0 0 4px">
+          Categorías de productos
+        </h2>
+        <p style="color:var(--gris);font-size:0.83rem;margin:0">
+          Solo el Admin global puede crear y activar categorías.
+          Los Encargados solamente podrán seleccionarlas.
+        </p>
+      </div>
+
+      <div style="
+        background:var(--blanco);
+        border-radius:var(--radio-lg);
+        padding:20px;
+        margin-bottom:24px;
+        box-shadow:var(--sombra);
+      ">
+        <h3 style="margin:0 0 14px;font-size:1rem">
+          Crear nueva categoría
+        </h3>
+
+        <form onsubmit="event.preventDefault(); crearCategoria();">
+          <div style="
+            display:grid;
+            grid-template-columns:minmax(180px, 1fr) 120px auto;
+            gap:12px;
+            align-items:end;
+          ">
+            <div>
+              <label for="nueva-categoria-nombre"
+                style="display:block;font-weight:700;font-size:0.82rem;margin-bottom:5px">
+                Nombre
+              </label>
+              <input
+                type="text"
+                id="nueva-categoria-nombre"
+                maxlength="150"
+                placeholder="Ej: Pan integral"
+                required
+                style="width:100%;box-sizing:border-box">
+            </div>
+
+            <div>
+              <label for="nueva-categoria-emoji"
+                style="display:block;font-weight:700;font-size:0.82rem;margin-bottom:5px">
+                Emoji
+              </label>
+              <input
+                type="text"
+                id="nueva-categoria-emoji"
+                maxlength="20"
+                value="🥖"
+                style="width:100%;box-sizing:border-box">
+            </div>
+
+            <button type="submit" class="btn btn-naranja">
+              Crear categoría
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div style="
+        background:var(--blanco);
+        border-radius:var(--radio-lg);
+        box-shadow:var(--sombra);
+        overflow:hidden;
+      ">
+        <table class="tabla-admin">
+          <thead>
+            <tr>
+              <th>Emoji</th>
+              <th>Nombre</th>
+              <th>Identificador</th>
+              <th>Estado</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            <?php if (empty($categorias_admin)): ?>
+              <tr>
+                <td colspan="5" style="text-align:center;color:var(--gris)">
+                  No hay categorías cargadas.
+                </td>
+              </tr>
+            <?php else: ?>
+              <?php foreach ($categorias_admin as $categoria): ?>
+                <tr>
+                  <td style="font-size:1.4rem">
+                    <?= h($categoria['emoji']) ?>
+                  </td>
+
+                  <td>
+                    <strong><?= h($categoria['nombre']) ?></strong>
+                  </td>
+
+                  <td style="color:var(--gris);font-size:0.82rem">
+                    <?= h($categoria['slug']) ?>
+                  </td>
+
+                  <td>
+                    <?php if ((int)$categoria['activo'] === 1): ?>
+                      <span style="
+                        background:#E8F5E9;
+                        color:#2E7D32;
+                        padding:4px 9px;
+                        border-radius:50px;
+                        font-size:0.78rem;
+                        font-weight:700;
+                      ">
+                        Activa
+                      </span>
+                    <?php else: ?>
+                      <span style="
+                        background:#FFEBEE;
+                        color:#C62828;
+                        padding:4px 9px;
+                        border-radius:50px;
+                        font-size:0.78rem;
+                        font-weight:700;
+                      ">
+                        Inactiva
+                      </span>
+                    <?php endif; ?>
+                  </td>
+
+                  <td>
+                    <button
+                      type="button"
+                      class="btn btn-sm <?= (int)$categoria['activo'] === 1 ? 'btn-ghost' : 'btn-naranja' ?>"
+                      onclick="alternarCategoria(<?= (int)$categoria['id'] ?>)">
+                      <?= (int)$categoria['activo'] === 1 ? 'Desactivar' : 'Activar' ?>
+                    </button>
+                  </td>
+                </tr>
+              <?php endforeach; ?>
+            <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+
     </div>
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
@@ -1613,6 +1915,41 @@ try {
         const email = tr.dataset.email || '';
         tr.style.display = (!term || nombre.includes(term) || email.includes(term)) ? '' : 'none';
       });
+    }
+
+        /* ══ CATEGORÍAS ═══════════════════════════════════════════════════════════ */
+
+    async function crearCategoria() {
+      const nombre = document
+        .getElementById('nueva-categoria-nombre')
+        .value
+        .trim();
+
+      const emoji = document
+        .getElementById('nueva-categoria-emoji')
+        .value
+        .trim();
+
+      const ok = await postAdmin({
+        accion: 'crear_categoria',
+        nombre,
+        emoji
+      });
+
+      if (ok) {
+        setTimeout(() => location.reload(), 700);
+      }
+    }
+
+    async function alternarCategoria(id) {
+      const ok = await postAdmin({
+        accion: 'alternar_categoria',
+        categoria_id: id
+      });
+
+      if (ok) {
+        setTimeout(() => location.reload(), 700);
+      }
     }
 
     /* ══ POST HELPER ═══════════════════════════════════════════════════════════ */

@@ -29,6 +29,22 @@ $mi_sucursal_id = $mi_sucursal_id === false
   ? null
   : (int)$mi_sucursal_id;
 
+/*
+ * Categorías creadas y habilitadas por el Admin global.
+ * Las categorías inactivas no aparecen para nuevos productos.
+ */
+$categorias_disponibles = db()->query("
+  SELECT slug, nombre, emoji
+  FROM categorias
+  WHERE activo = 1
+  ORDER BY nombre ASC
+")->fetchAll();
+
+$categorias_activas = array_column(
+  $categorias_disponibles,
+  'slug'
+);
+
 $seccion = $_GET['sec'] ?? 'inicio';
 $msg_ok  = '';
 $msg_err = '';
@@ -385,7 +401,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $nombre  = trim($_POST['nombre']   ?? '');
     $desc    = trim($_POST['desc']     ?? '');
     $precio  = (float)($_POST['precio'] ?? 0);
-    $cat     = $_POST['cat']           ?? 'pan';
+    $cat     = trim($_POST['cat'] ?? '');
     $unidad  = $_POST['unidad']        ?? 'unidad';
     $med_doc = $unidad === 'kilo' ? null : (($_POST['media_doc'] ?? '') !== '' ? (float)$_POST['media_doc'] : null);
     $docena  = $unidad === 'kilo' ? null : (($_POST['docena']    ?? '') !== '' ? (float)$_POST['docena']    : null);
@@ -508,20 +524,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $nombre  = trim($_POST['nombre']   ?? '');
     $desc    = trim($_POST['desc']     ?? '');
     $precio  = (float)($_POST['precio'] ?? 0);
-    $cat     = $_POST['cat']           ?? 'pan';
+    $cat     = trim($_POST['cat'] ?? '');
     $unidad  = $_POST['unidad']        ?? 'unidad';
     $med_doc = $unidad === 'kilo' ? null : (($_POST['media_doc'] ?? '') !== '' ? (float)$_POST['media_doc'] : null);
     $docena  = $unidad === 'kilo' ? null : (($_POST['docena']    ?? '') !== '' ? (float)$_POST['docena']    : null);
     $stock   = (int)($_POST['stock']   ?? 0);
     $extra   = trim($_POST['extra']    ?? '') ?: null;
 
-    $chk = db()->prepare("SELECT id FROM productos WHERE id=? AND vendedor_id=?");
+    $chk = db()->prepare("
+      SELECT id, categoria
+      FROM productos
+      WHERE id = ?
+        AND vendedor_id = ?
+      LIMIT 1
+    ");
     $chk->execute([$pid, $uid]);
-    if (!$chk->fetch()) {
+
+    $producto_actual = $chk->fetch();
+
+    if (!$producto_actual) {
       $msg_err = 'Producto no encontrado.';
       $seccion = 'productos';
     } elseif (!$nombre || $precio <= 0) {
       $msg_err = 'Completá nombre y precio.';
+      $seccion = 'add';
+    } elseif (
+      !in_array($cat, $categorias_activas, true)
+      && $cat !== $producto_actual['categoria']
+    ) {
+      $msg_err = 'La categoría seleccionada no existe o está inactiva.';
       $seccion = 'add';
     } else {
       $img_url = null;
@@ -2272,12 +2303,35 @@ if ($tipo_suc === 'padre') {
           <div class="field">
             <label>Categoría *</label>
             <select name="cat">
-              <?php foreach (['pan' => '🍞 Pan', 'facturas' => '🥐 Facturas', 'galletas' => '🍪 Galletas', 'cakes' => '🎂 Cakes', 'otro' => '✨ Otro'] as $k => $v): ?>
-                <option value="<?= $k ?>"
-                  <?= ($edit_prod['categoria'] ?? 'pan') === $k ? 'selected' : '' ?>>
-                  <?= $v ?>
+              <?php foreach ($categorias_disponibles as $categoria): ?>
+                <option
+                  value="<?= h($categoria['slug']) ?>"
+                  <?= ($edit_prod['categoria'] ?? '') === $categoria['slug'] ? 'selected' : '' ?>>
+                  <?= h($categoria['emoji']) ?> <?= h($categoria['nombre']) ?>
                 </option>
               <?php endforeach; ?>
+
+              <?php
+              /*
+              * Conserva visualmente una categoría antigua si fue desactivada.
+              * No la habilita para nuevos productos.
+              */
+              $cat_editada = $edit_prod['categoria'] ?? '';
+
+              $cat_editada_activa = false;
+              foreach ($categorias_disponibles as $categoria) {
+                if ($categoria['slug'] === $cat_editada) {
+                  $cat_editada_activa = true;
+                  break;
+                }
+              }
+              ?>
+
+              <?php if ($edit_prod && $cat_editada !== '' && !$cat_editada_activa): ?>
+                <option value="<?= h($cat_editada) ?>" selected>
+                  <?= h(cat_label($cat_editada)) ?> (categoría anterior)
+                </option>
+              <?php endif; ?>
             </select>
           </div>
         </div>
