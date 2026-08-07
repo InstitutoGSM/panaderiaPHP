@@ -524,19 +524,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $nombre    = trim($_POST['nombre']       ?? '');
     $ident_t   = preg_replace('/[^a-zA-Z0-9_]/', '', trim($_POST['identificador'] ?? ''));
     $documento = trim($_POST['documento_id'] ?? '');
-    $email_t   = trim($_POST['email']        ?? '');
-    $pass_t    = trim($_POST['password']     ?? '');
-    if (!$nombre || !$ident_t || !$documento || !$email_t || strlen($pass_t) < 6) {
+    $email_t    = trim($_POST['email']        ?? '');
+    $pass_t     = trim($_POST['password']     ?? '');
+    $sucursal_t = (int)($_POST['sucursal_id'] ?? 0);
+    if (!$nombre || !$ident_t || !$documento || !$email_t || strlen($pass_t) < 6 || !$sucursal_t) {
       $msg_err = 'Todos los campos son obligatorios (contraseña mínimo 6 caracteres).';
       $seccion = 'trabajadores';
     } else {
       $avatar_t = null;
       if (!empty($_FILES['avatar']['name'])) $avatar_t = subir_imagen($_FILES['avatar'], 'avatar');
       try {
+        $sucursal_q = db()->prepare("
+          SELECT id
+          FROM sucursales
+          WHERE id = ?
+            AND activo = 1
+            AND estado = 'activa'
+            AND (
+              vendedor_id = ?
+              OR padre_id = ?
+            )
+          LIMIT 1
+        ");
+        $sucursal_q->execute([$sucursal_t, $uid, $uid]);
+
+        if (!$sucursal_q->fetchColumn()) {
+          throw new RuntimeException('La sucursal seleccionada no pertenece a tu panadería.');
+        }
+
         db()->prepare("
-                    INSERT INTO usuarios (nombre, identificador, documento_id, email, password_hash, tipo, panaderia_id, avatar_url, estado_verificacion)
-                    VALUES (?,?,?,?,?, 'trabajador', ?,?, 'aprobado')
-                ")->execute([$nombre, $ident_t, $documento, $email_t, password_hash($pass_t, PASSWORD_DEFAULT), $uid, $avatar_t]);
+          INSERT INTO usuarios (
+            nombre,
+            identificador,
+            documento_id,
+            email,
+            password_hash,
+            tipo,
+            panaderia_id,
+            sucursal_id,
+            avatar_url,
+            estado_verificacion
+          )
+          VALUES (?, ?, ?, ?, ?, 'trabajador', ?, ?, ?, 'aprobado')
+        ")->execute([
+          $nombre,
+          $ident_t,
+          $documento,
+          $email_t,
+          password_hash($pass_t, PASSWORD_DEFAULT),
+          $uid,
+          $sucursal_t,
+          $avatar_t
+        ]);
+
         $msg_ok = '¡Trabajador ' . $nombre . ' creado! ✅';
       } catch (Exception $e) {
         $msg = $e->getMessage();
@@ -957,12 +997,26 @@ $medios_actuales = array_filter(explode(',', $u['medios_pago'] ?? 'efectivo'));
 $tiene_transf    = in_array('transferencia', $medios_actuales);
 
 // ── Trabajadores de esta panadería ────────────────────────────────────────
-$trabajadores = db()->query("
-    SELECT id, nombre, email, identificador, documento_id, avatar_url, created_at
-    FROM usuarios
-    WHERE tipo = 'trabajador' AND panaderia_id = $uid
-    ORDER BY nombre
-")->fetchAll();
+$trabajadores_q = db()->prepare("
+  SELECT
+    u.id,
+    u.nombre,
+    u.email,
+    u.identificador,
+    u.documento_id,
+    u.avatar_url,
+    u.sucursal_id,
+    u.created_at,
+    COALESCE(s.nombre, 'Sin sucursal asignada') AS sucursal_nombre
+  FROM usuarios u
+  LEFT JOIN sucursales s
+    ON s.id = u.sucursal_id
+  WHERE u.tipo = 'trabajador'
+    AND u.panaderia_id = ?
+  ORDER BY u.nombre
+");
+$trabajadores_q->execute([$uid]);
+$trabajadores = $trabajadores_q->fetchAll();
 
 // ── Sucursales Hija de este Padre ─────────────────────────────────────────
 $mis_hijas = [];
@@ -991,6 +1045,46 @@ if ($tipo_suc === 'padre') {
 
   $hijas_stmt->execute([$uid]);
   $mis_hijas = $hijas_stmt->fetchAll();
+}
+
+/* ── Sucursales disponibles para asignar trabajadores ──────────────── */
+$sucursales_trabajador = [];
+
+if ($tipo_suc === 'padre') {
+  $suc_trab_q = db()->prepare("
+    SELECT
+      id,
+      nombre,
+      CASE
+        WHEN padre_id IS NULL THEN 'Sucursal Padre'
+        ELSE 'Sucursal Hija'
+      END AS tipo_nombre
+    FROM sucursales
+    WHERE activo = 1
+      AND estado = 'activa'
+      AND (
+        (vendedor_id = ? AND padre_id IS NULL)
+        OR padre_id = ?
+      )
+    ORDER BY padre_id IS NULL DESC, nombre
+  ");
+  $suc_trab_q->execute([$uid, $uid]);
+  $sucursales_trabajador = $suc_trab_q->fetchAll();
+
+} elseif ($tipo_suc === 'hija') {
+  $suc_trab_q = db()->prepare("
+    SELECT
+      id,
+      nombre,
+      'Sucursal Hija' AS tipo_nombre
+    FROM sucursales
+    WHERE vendedor_id = ?
+      AND activo = 1
+      AND estado = 'activa'
+    ORDER BY nombre
+  ");
+  $suc_trab_q->execute([$uid]);
+  $sucursales_trabajador = $suc_trab_q->fetchAll();
 }
 
 /* ── Historial de movimientos ─────────────────────────────────────────── */
@@ -1931,6 +2025,10 @@ if ($tipo_suc === 'padre') {
                 <?= !empty($t['identificador']) ? '@' . h($t['identificador']) . ' · ' : '' ?>
                 <?= h($t['email']) ?>
                 <?= !empty($t['documento_id']) ? ' · DNI: ' . h($t['documento_id']) : '' ?>
+                <br>
+                <strong style="color:var(--marron)">
+                  📍 <?= h($t['sucursal_nombre']) ?>
+                </strong>
               </p>
               <?php if ($sol): ?>
                 <?php
@@ -2025,6 +2123,21 @@ if ($tipo_suc === 'padre') {
           <div>
             <label style="display:block;font-weight:700;font-size:0.85rem;margin-bottom:4px">Gmail *</label>
             <input type="email" name="email" required placeholder="trabajador@gmail.com">
+          </div>
+
+          <div style="grid-column:1 / -1">
+            <label style="display:block;font-weight:700;font-size:0.85rem;margin-bottom:4px">
+              Sucursal asignada *
+            </label>
+            <select name="sucursal_id" required
+              style="width:100%;padding:9px;border:1px solid #ddd;border-radius:6px">
+              <option value="">Seleccioná una sucursal</option>
+              <?php foreach ($sucursales_trabajador as $suc_trab): ?>
+                <option value="<?= (int)$suc_trab['id'] ?>">
+                  <?= h($suc_trab['nombre']) ?> — <?= h($suc_trab['tipo_nombre']) ?>
+                </option>
+              <?php endforeach; ?>
+            </select>
           </div>
         </div>
         <div style="margin-bottom:12px">

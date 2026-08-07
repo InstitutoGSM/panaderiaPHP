@@ -13,20 +13,47 @@ if (!$pan_id) {
 }
 
 /*
- * Compatibilidad con trabajadores creados antes de agregar
- * la columna sucursal_id.
+ * Verificar que la sucursal asignada pertenezca
+ * a la panadería del trabajador.
+ */
+if ($sucursal_id) {
+    $sucursal_valida_q = db()->prepare("
+        SELECT id
+        FROM sucursales
+        WHERE id = ?
+          AND activo = 1
+          AND estado = 'activa'
+          AND (
+              vendedor_id = ?
+              OR padre_id = ?
+          )
+        LIMIT 1
+    ");
+    $sucursal_valida_q->execute([$sucursal_id, $pan_id]);
+
+    if (!$sucursal_valida_q->fetchColumn()) {
+        $sucursal_id = 0;
+    }
+}
+
+/*
+ * Compatibilidad con trabajadores antiguos
+ * que todavía no tienen sucursal asignada.
  */
 if (!$sucursal_id) {
     $sucursal_q = db()->prepare("
         SELECT id
         FROM sucursales
-        WHERE vendedor_id = ?
-          AND activo = 1
+        WHERE activo = 1
           AND estado = 'activa'
+          AND (
+              vendedor_id = ?
+              OR padre_id = ?
+          )
         ORDER BY id
         LIMIT 1
     ");
-    $sucursal_q->execute([$pan_id]);
+    $sucursal_q->execute([$pan_id, $pan_id]);
     $sucursal_id = (int)($sucursal_q->fetchColumn() ?: 0);
 }
 
