@@ -33,12 +33,42 @@ $seccion = $_GET['sec'] ?? 'inicio';
 $msg_ok  = '';
 $msg_err = '';
 
+// Solicitud vigente de este vendedor para ser Padre
+$sol_padre = null;
+try {
+  $sp = db()->prepare("SELECT * FROM solicitudes_padre WHERE vendedor_id = ? ORDER BY id DESC LIMIT 1");
+  $sp->execute([$uid]);
+  $sol_padre = $sp->fetch() ?: null;
+} catch (Exception $e) {}
+
 /* ══════════════════════════════════════════════════════════════════════════
    POST HANDLERS
 ══════════════════════════════════════════════════════════════════════════ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   csrf_verificar();
   $accion = $_POST['accion'] ?? '';
+
+  /* ── Solicitar ser Encargado Padre ─────────────────────────────── */
+  if ($accion === 'solicitar_ser_padre') {
+    if ($u['estado_verificacion'] !== 'aprobado') {
+      $msg_err = 'Tu cuenta debe estar aprobada para hacer esta solicitud.';
+    } elseif ($tipo_suc) {
+      $msg_err = 'Ya tenés un rol asignado.';
+    } elseif ($sol_padre && $sol_padre['estado'] === 'pendiente') {
+      $msg_err = 'Ya tenés una solicitud pendiente.';
+    } else {
+      db()->prepare("
+        INSERT INTO solicitudes_padre (vendedor_id, estado)
+        VALUES (?, 'pendiente')
+        ON DUPLICATE KEY UPDATE estado='pendiente', motivo_rechazo=NULL, updated_at=NOW()
+      ")->execute([$uid]);
+      // Recargar solicitud
+      $sp2 = db()->prepare("SELECT * FROM solicitudes_padre WHERE vendedor_id = ? ORDER BY id DESC LIMIT 1");
+      $sp2->execute([$uid]);
+      $sol_padre = $sp2->fetch() ?: null;
+      $msg_ok = 'Solicitud enviada. El administrador la revisará pronto.';
+    }
+  }
 
   /* ── Crear invitación para sucursal Hija ───────────────────────────── */
   if ($accion === 'crear_invitacion_sucursal') {
@@ -1227,6 +1257,26 @@ if ($tipo_suc === 'padre') {
             <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
               <a href="vendedor.php?sec=perfil" class="btn btn-naranja btn-sm">Completar perfil →</a>
               <a href="vendedor.php?sec=documentos" class="btn btn-ghost btn-sm">Mis documentos →</a>
+              <?php if ($u['estado_verificacion'] === 'aprobado'): ?>
+                <?php if (!$sol_padre || $sol_padre['estado'] === 'rechazada'): ?>
+                  <form method="POST" style="margin:0">
+                    <input type="hidden" name="csrf_token" value="<?= csrf_token() ?>">
+                    <input type="hidden" name="accion" value="solicitar_ser_padre">
+                    <button type="submit" class="btn btn-ghost btn-sm" style="border-color:#4CAF50;color:#2E7D32">
+                      👑 Solicitar ser Encargado Padre
+                    </button>
+                  </form>
+                  <?php if ($sol_padre && $sol_padre['estado'] === 'rechazada'): ?>
+                    <p style="margin:6px 0 0;font-size:0.82rem;color:#C62828">
+                      ❌ Solicitud rechazada<?= $sol_padre['motivo_rechazo'] ? ': ' . h($sol_padre['motivo_rechazo']) : '.' ?>
+                    </p>
+                  <?php endif; ?>
+                <?php elseif ($sol_padre['estado'] === 'pendiente'): ?>
+                  <span style="padding:6px 14px;border-radius:50px;background:#FFF8E1;color:#E65100;font-size:0.82rem;font-weight:700">
+                    ⏳ Solicitud de Padre pendiente
+                  </span>
+                <?php endif; ?>
+              <?php endif; ?>
             </div>
           </div>
         <?php endif; ?>

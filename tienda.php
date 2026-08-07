@@ -26,7 +26,7 @@ $prod_stmt = db()->prepare("
            precio_media_docena, precio_docena,
            imagen_url, unidad_venta, cantidad_disponible
     FROM   productos
-    WHERE  vendedor_id = ? AND activo = 1
+    WHERE  vendedor_id = ? AND activo = 1 AND cantidad_disponible > 0
     ORDER  BY created_at DESC
 ");
 $prod_stmt->execute([$vid]);

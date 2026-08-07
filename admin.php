@@ -13,6 +13,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   header('Content-Type: application/json');
   $accion = $_POST['accion'] ?? '';
 
+  if ($accion === 'aprobar_solicitud_padre') {
+    $sid = (int)($_POST['sol_id'] ?? 0);
+    $pdo = db();
+    try {
+      $sol = $pdo->prepare("SELECT * FROM solicitudes_padre WHERE id = ? AND estado = 'pendiente' LIMIT 1");
+      $sol->execute([$sid]);
+      $s = $sol->fetch();
+      if (!$s) {
+        echo json_encode(['ok' => false, 'msg' => 'Solicitud no encontrada']);
+        exit;
+      }
+
+      $vid = (int)$s['vendedor_id'];
+      $pdo->beginTransaction();
+
+      // Convertir en Padre
+      $pdo->prepare("UPDATE usuarios SET is_admin_pan=1, puede_ser_admin=1, tipo_sucursal='padre', sucursal_padre_id=NULL WHERE id=? AND tipo='vendedor'")->execute([$vid]);
+
+      // Crear sucursal Padre si no existe
+      $existe = $pdo->prepare("SELECT id FROM sucursales WHERE vendedor_id=? AND padre_id IS NULL LIMIT 1");
+      $existe->execute([$vid]);
+      if (!$existe->fetch()) {
+        $nom = $pdo->prepare("SELECT nombre_panaderia, nombre FROM usuarios WHERE id=?");
+        $nom->execute([$vid]);
+        $datos = $nom->fetch();
+        $nombre_suc = $datos['nombre_panaderia'] ?: $datos['nombre'];
+        $pdo->prepare("INSERT INTO sucursales (vendedor_id, nombre, activo, estado) VALUES (?, ?, 1, 'activa')")->execute([$vid, $nombre_suc]);
+      }
+
+      // Marcar solicitud aprobada
+      $pdo->prepare("UPDATE solicitudes_padre SET estado='aprobada', updated_at=NOW() WHERE id=?")->execute([$sid]);
+
+      $pdo->commit();
+      echo json_encode(['ok' => true, 'msg' => 'Vendedor convertido en Encargado Padre ✅']);
+    } catch (Exception $e) {
+      $pdo->rollBack();
+      echo json_encode(['ok' => false, 'msg' => 'Error: ' . $e->getMessage()]);
+    }
+    exit;
+  }
+
+  if ($accion === 'rechazar_solicitud_padre') {
+    $sid    = (int)($_POST['sol_id'] ?? 0);
+    $motivo = trim($_POST['motivo'] ?? '');
+    if (!$sid) {
+      echo json_encode(['ok' => false, 'msg' => 'ID inválido']);
+      exit;
+    }
+    db()->prepare("UPDATE solicitudes_padre SET estado='rechazada', motivo_rechazo=?, updated_at=NOW() WHERE id=? AND estado='pendiente'")->execute([$motivo ?: null, $sid]);
+    echo json_encode(['ok' => true, 'msg' => 'Solicitud rechazada.']);
+    exit;
+  }
+
   // IDs
   $vid = (int)($_POST['vendedor_id'] ?? 0);
   $uid = (int)($_POST['uid'] ?? 0);
@@ -565,6 +618,19 @@ foreach ($vendedores as $v) {
   $e = $v['estado_verificacion'] ?? 'sin_enviar';
   if (isset($stats[$e])) $stats[$e]++;
 }
+
+// Solicitudes para ser Padre
+$solicitudes_padre = [];
+try {
+  $solicitudes_padre = db()->query("
+    SELECT sp.*, u.nombre, u.email, u.estado_verificacion
+    FROM solicitudes_padre sp
+    JOIN usuarios u ON u.id = sp.vendedor_id
+    WHERE sp.estado = 'pendiente'
+    ORDER BY sp.created_at ASC
+  ")->fetchAll();
+} catch (Exception $e) {
+}
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -886,6 +952,27 @@ foreach ($vendedores as $v) {
     <!-- PANADERIAS                                                   -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="tab-panaderias" class="tab-panel activo">
+
+      <?php if (!empty($solicitudes_padre)): ?>
+        <div style="border-left:4px solid #4CAF50;background:#fff;border-radius:var(--radio);padding:20px 24px;margin-bottom:24px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">
+          <h3 style="margin:0 0 14px;color:#2E7D32">👑 Solicitudes para ser Encargado Padre <span style="background:#4CAF50;color:#fff;border-radius:50px;padding:2px 10px;font-size:0.82rem;margin-left:6px"><?= count($solicitudes_padre) ?></span></h3>
+          <div style="display:grid;gap:10px">
+            <?php foreach ($solicitudes_padre as $sp): ?>
+              <div style="display:flex;align-items:center;gap:14px;padding:12px 16px;background:#F9F9F9;border-radius:var(--radio);border:1px solid #E0E0E0">
+                <div style="flex:1">
+                  <p style="font-weight:700;margin:0 0 2px"><?= h($sp['nombre']) ?></p>
+                  <p style="color:var(--gris);font-size:0.82rem;margin:0"><?= h($sp['email']) ?> · <span class="estado-badge estado-<?= h($sp['estado_verificacion']) ?>"><?= h($sp['estado_verificacion']) ?></span></p>
+                  <p style="color:var(--gris);font-size:0.78rem;margin:4px 0 0">Solicitado: <?= $sp['created_at'] ?></p>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button onclick="aprobarPadre(<?= $sp['id'] ?>)" class="btn btn-sm" style="background:#E8F5E9;color:#2E7D32;border:none;font-weight:700">✅ Aprobar</button>
+                  <button onclick="rechazarPadre(<?= $sp['id'] ?>)" class="btn btn-sm" style="background:#FFEBEE;color:#C62828;border:none;font-weight:700">❌ Rechazar</button>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          </div>
+        </div>
+      <?php endif; ?>
 
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <h2 style="font-family:'Playfair Display',serif;font-size:1.1rem;margin:0">
@@ -1582,6 +1669,24 @@ foreach ($vendedores as $v) {
           toast(d.msg, d.ok ? 'ok' : 'err');
           if (d.ok) setTimeout(() => location.reload(), 900);
         });
+    }
+
+    async function aprobarPadre(id) {
+      if (!confirm('¿Convertir este vendedor en Encargado Padre?')) return;
+      await postAdmin({
+        accion: 'aprobar_solicitud_padre',
+        sol_id: id
+      });
+      setTimeout(() => location.reload(), 900);
+    }
+    async function rechazarPadre(id) {
+      const motivo = prompt('Motivo del rechazo (opcional):') ?? '';
+      await postAdmin({
+        accion: 'rechazar_solicitud_padre',
+        sol_id: id,
+        motivo
+      });
+      setTimeout(() => location.reload(), 900);
     }
   </script>
 </body>

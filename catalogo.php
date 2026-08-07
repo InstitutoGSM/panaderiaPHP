@@ -23,7 +23,7 @@ $ordenes = [
 $order_sql = $ordenes[$orden] ?? 'p.created_at DESC';
 
 // ── Consulta de productos ────────────────────────────────────────────────
-$where  = ['p.activo = 1', "u.estado_verificacion = 'aprobado'"];
+$where  = ['p.activo = 1', "u.estado_verificacion = 'aprobado'", "u.tipo = 'vendedor'", 'p.cantidad_disponible > 0'];
 $params = [];
 
 if ($cat !== 'todos') {

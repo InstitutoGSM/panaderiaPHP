@@ -13,6 +13,8 @@ $stmt = db()->prepare("
   JOIN   usuarios  u ON u.id = p.vendedor_id
   WHERE  p.activo = 1
     AND  u.estado_verificacion = 'aprobado'
+    AND  u.tipo = 'vendedor'
+    AND  p.cantidad_disponible > 0
     AND  p.nombre LIKE ?
   LIMIT 8
 ");
